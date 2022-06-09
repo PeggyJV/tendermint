@@ -28,6 +28,7 @@ docs/spec
 docs/.vuepress/public/rpc
 index.html.md
 libs/pubsub/query/fuzz_test/output
+test/narwhalmint/test_results
 profile\.out
 remote_dump
 rpc/test/.tendermint
