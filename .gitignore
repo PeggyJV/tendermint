@@ -23,7 +23,12 @@ docs/.vuepress/dist
 abci-cli
 docs/node_modules/
 index.html.md
-
+libs/pubsub/query/fuzz_test/output
+test/narwhalmint/test_results
+profile\.out
+remote_dump
+rpc/test/.tendermint
+scripts/cutWALUntil/cutWALUntil
 scripts/wal2json/wal2json
 scripts/cutWALUntil/cutWALUntil
 
