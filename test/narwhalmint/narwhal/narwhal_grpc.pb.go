@@ -312,6 +312,8 @@ var Proposer_ServiceDesc = grpc.ServiceDesc{
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type ConfigurationClient interface {
+	// Signals a new epoch
+	NewEpoch(ctx context.Context, in *NewEpochRequest, opts ...grpc.CallOption) (*Empty, error)
 	// Signals a change in networking info
 	NewNetworkInfo(ctx context.Context, in *NewNetworkInfoRequest, opts ...grpc.CallOption) (*Empty, error)
 }
@@ -322,6 +324,15 @@ type configurationClient struct {
 
 func NewConfigurationClient(cc grpc.ClientConnInterface) ConfigurationClient {
 	return &configurationClient{cc}
+}
+
+func (c *configurationClient) NewEpoch(ctx context.Context, in *NewEpochRequest, opts ...grpc.CallOption) (*Empty, error) {
+	out := new(Empty)
+	err := c.cc.Invoke(ctx, "/narwhal.Configuration/NewEpoch", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func (c *configurationClient) NewNetworkInfo(ctx context.Context, in *NewNetworkInfoRequest, opts ...grpc.CallOption) (*Empty, error) {
@@ -337,6 +348,8 @@ func (c *configurationClient) NewNetworkInfo(ctx context.Context, in *NewNetwork
 // All implementations must embed UnimplementedConfigurationServer
 // for forward compatibility
 type ConfigurationServer interface {
+	// Signals a new epoch
+	NewEpoch(context.Context, *NewEpochRequest) (*Empty, error)
 	// Signals a change in networking info
 	NewNetworkInfo(context.Context, *NewNetworkInfoRequest) (*Empty, error)
 	mustEmbedUnimplementedConfigurationServer()
@@ -346,6 +359,9 @@ type ConfigurationServer interface {
 type UnimplementedConfigurationServer struct {
 }
 
+func (UnimplementedConfigurationServer) NewEpoch(context.Context, *NewEpochRequest) (*Empty, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method NewEpoch not implemented")
+}
 func (UnimplementedConfigurationServer) NewNetworkInfo(context.Context, *NewNetworkInfoRequest) (*Empty, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method NewNetworkInfo not implemented")
 }
@@ -360,6 +376,24 @@ type UnsafeConfigurationServer interface {
 
 func RegisterConfigurationServer(s grpc.ServiceRegistrar, srv ConfigurationServer) {
 	s.RegisterService(&Configuration_ServiceDesc, srv)
+}
+
+func _Configuration_NewEpoch_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(NewEpochRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ConfigurationServer).NewEpoch(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/narwhal.Configuration/NewEpoch",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ConfigurationServer).NewEpoch(ctx, req.(*NewEpochRequest))
+	}
+	return interceptor(ctx, in, info, handler)
 }
 
 func _Configuration_NewNetworkInfo_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
@@ -387,6 +421,10 @@ var Configuration_ServiceDesc = grpc.ServiceDesc{
 	ServiceName: "narwhal.Configuration",
 	HandlerType: (*ConfigurationServer)(nil),
 	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "NewEpoch",
+			Handler:    _Configuration_NewEpoch_Handler,
+		},
 		{
 			MethodName: "NewNetworkInfo",
 			Handler:    _Configuration_NewNetworkInfo_Handler,

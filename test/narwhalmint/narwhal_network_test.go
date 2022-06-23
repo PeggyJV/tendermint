@@ -81,12 +81,11 @@ func TestNarwhalNetwork(t *testing.T) {
 	maxTXs := 500
 	t.Logf("submitting %d txs", maxTXs)
 	for i := 0; i < maxTXs; i++ {
-		c := l.NextTransactionClient()
-		meta := c.Meta()
 		txPayload := []byte("payload-" + strconv.Itoa(i))
+		c := l.NextTransactionClient()
 		err := c.SubmitTransaction(ctx, txPayload)
 		if err != nil {
-			t.Logf("faled to submit TX for %s: %s", meta, err)
+			t.Logf("faled to submit TX for %s: %s", c.Meta(), err)
 			continue
 		}
 	}

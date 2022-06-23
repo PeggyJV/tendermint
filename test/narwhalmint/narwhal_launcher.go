@@ -451,6 +451,7 @@ func newKeyFile(ctx context.Context, testDir testDirs) (string, error) {
 type (
 	committeeCFG struct {
 		Authorities map[string]authorityCFG `json:"authorities"`
+		Epoch       int                     `json:"epoch"`
 	}
 
 	authorityCFG struct {
