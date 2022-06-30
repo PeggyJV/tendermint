@@ -107,7 +107,7 @@ func NewCListMempool(
 	return mempool
 }
 
-// NOTE: not thread safe - should only be called once, on startup
+// EnableTxsAvailable is not thread safe - should only be called once, on startup
 func (mem *CListMempool) EnableTxsAvailable() {
 	mem.txsAvailable = make(chan struct{}, 1)
 }
@@ -163,27 +163,27 @@ func (mem *CListMempool) CloseWAL() {
 	mem.wal = nil
 }
 
-// Safe for concurrent use by multiple goroutines.
+// Lock is safe for concurrent use by multiple goroutines.
 func (mem *CListMempool) Lock() {
 	mem.updateMtx.Lock()
 }
 
-// Safe for concurrent use by multiple goroutines.
+// Unlock is safe for concurrent use by multiple goroutines.
 func (mem *CListMempool) Unlock() {
 	mem.updateMtx.Unlock()
 }
 
-// Safe for concurrent use by multiple goroutines.
+// Size is safe for concurrent use by multiple goroutines.
 func (mem *CListMempool) Size() int {
 	return mem.txs.Len()
 }
 
-// Safe for concurrent use by multiple goroutines.
+// TxsBytes safe for concurrent use by multiple goroutines.
 func (mem *CListMempool) TxsBytes() int64 {
 	return atomic.LoadInt64(&mem.txsBytes)
 }
 
-// Lock() must be help by the caller during execution.
+// FlushAppConn requires Lock() held by the caller during execution.
 func (mem *CListMempool) FlushAppConn() error {
 	return mem.proxyAppConn.FlushSync()
 }
@@ -225,7 +225,7 @@ func (mem *CListMempool) TxsWaitChan() <-chan struct{} {
 	return mem.txs.WaitChan()
 }
 
-// It blocks if we're waiting on Update() or Reap().
+// CheckTx blocks if we're waiting on Update() or Reap().
 // cb: A callback from the CheckTx command.
 //     It gets called from another goroutine.
 // CONTRACT: Either cb will get called, or err returned.
@@ -357,6 +357,7 @@ func (mem *CListMempool) addTx(memTx *mempoolTx) {
 // Called from:
 //  - Update (lock held) if tx was committed
 // 	- resCbRecheck (lock not held) if tx was invalidated
+//  - resCbFirstTime happens when mempool is full
 func (mem *CListMempool) removeTx(tx types.Tx, elem *clist.CElement, removeFromCache bool) {
 	mem.txs.Remove(elem)
 	elem.DetachPrev()
@@ -565,7 +566,7 @@ func (mem *CListMempool) ReapMaxTxs(max int) types.Txs {
 	return txs
 }
 
-// Lock() must be help by the caller during execution.
+// Update requires Lock() held by the caller during execution.
 func (mem *CListMempool) Update(
 	height int64,
 	txs types.Txs,

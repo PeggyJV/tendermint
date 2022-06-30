@@ -413,18 +413,20 @@ func (state *state) send(msg interface{}, events map[string][]string) error {
 			return fmt.Errorf("failed to match against query %s: %w", q.String(), err)
 		}
 
-		if match {
-			for clientID, subscription := range clientSubscriptions {
-				if cap(subscription.out) == 0 {
-					// block on unbuffered channel
-					subscription.out <- NewMessage(msg, events)
-				} else {
-					// don't block on buffered channels
-					select {
-					case subscription.out <- NewMessage(msg, events):
-					default:
-						state.remove(clientID, qStr, ErrOutOfCapacity)
-					}
+		if !match {
+			continue
+		}
+
+		for clientID, subscription := range clientSubscriptions {
+			if cap(subscription.out) == 0 {
+				// block on unbuffered channel
+				subscription.out <- NewMessage(msg, events)
+			} else {
+				// don't block on buffered channels
+				select {
+				case subscription.out <- NewMessage(msg, events):
+				default:
+					state.remove(clientID, qStr, ErrOutOfCapacity)
 				}
 			}
 		}

@@ -25,6 +25,12 @@ const (
 	DefaultLogLevel = "info"
 )
 
+const (
+	kilobyte = 1 << 10
+	megabyte = kilobyte << 10
+	gigabyte = megabyte << 10
+)
+
 // NOTE: Most of the structs & relevant comments + the
 // default configuration options were used to manually
 // generate the config.toml. Please reflect any changes
@@ -710,9 +716,9 @@ func DefaultMempoolConfig() *MempoolConfig {
 		// Each signature verification takes .5ms, Size reduced until we implement
 		// ABCI Recheck
 		Size:        5000,
-		MaxTxsBytes: 1024 * 1024 * 1024, // 1GB
+		MaxTxsBytes: 1 * gigabyte,
 		CacheSize:   10000,
-		MaxTxBytes:  1024 * 1024, // 1MB
+		MaxTxBytes:  1 * megabyte,
 	}
 }
 

@@ -690,13 +690,15 @@ func (cs *State) newStep() {
 	cs.nSteps++
 
 	// newStep is called by updateToState in NewState before the eventBus is set!
-	if cs.eventBus != nil {
-		if err := cs.eventBus.PublishEventNewRoundStep(rs); err != nil {
-			cs.Logger.Error("failed publishing new round step", "err", err)
-		}
-
-		cs.evsw.FireEvent(types.EventNewRoundStep, &cs.RoundState)
+	if cs.eventBus == nil {
+		return
 	}
+
+	if err := cs.eventBus.PublishEventNewRoundStep(rs); err != nil {
+		cs.Logger.Error("failed publishing new round step", "err", err)
+	}
+
+	cs.evsw.FireEvent(types.EventNewRoundStep, &cs.RoundState)
 }
 
 //-----------------------------------------
