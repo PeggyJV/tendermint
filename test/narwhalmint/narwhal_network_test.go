@@ -95,8 +95,13 @@ func TestNarwhalNetwork(t *testing.T) {
 	time.Sleep(waitDir)
 	t.Log("setup complete\n")
 
-	proposeBlockRun(t, ctx, &l, 0)
-	proposeBlockRun(t, ctx, &l, 1)
+	timedCTX, cancel := context.WithTimeout(ctx, 5*time.Second)
+	proposeBlockRun(t, timedCTX, &l, 0)
+	cancel()
+
+	timedCTX, cancel = context.WithTimeout(ctx, 5*time.Second)
+	proposeBlockRun(t, timedCTX, &l, 1)
+	cancel()
 
 	t.Log("terminating narwhal_nodes...")
 	cancel()

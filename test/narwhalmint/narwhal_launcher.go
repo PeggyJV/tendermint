@@ -115,7 +115,12 @@ func (l *LauncherNarwhal) Start(ctx context.Context) error {
 	}
 
 	l.status = "running"
-	l.runtimeErrStream = l.runAllNodes(ctx)
+	runtimeErrStream, startupErr := l.runAllNodes(ctx)
+	if startupErr != nil {
+		l.status = "failed startup"
+		return startupErr
+	}
+	l.runtimeErrStream = runtimeErrStream
 
 	var primaryClients []*NarwhalPrimaryNodeClient
 	for nodeName, aCFG := range l.committeeCFG.Authorities {
@@ -158,7 +163,7 @@ func (l *LauncherNarwhal) NodeRuntimeErrs() <-chan error {
 	return l.runtimeErrStream
 }
 
-func (l *LauncherNarwhal) runAllNodes(ctx context.Context) <-chan error {
+func (l *LauncherNarwhal) runAllNodes(ctx context.Context) (<-chan error, error) {
 	errStream := make(chan error)
 
 	readyMsgStream := make(chan readyMsg)
@@ -200,10 +205,11 @@ func (l *LauncherNarwhal) runAllNodes(ctx context.Context) <-chan error {
 
 	select {
 	case <-ctx.Done():
-	case <-l.awaitStartup(ctx, readyMsgStream):
+	case err := <-l.awaitStartup(ctx, readyMsgStream):
+		return errStream, err
 	}
 
-	return errStream
+	return errStream, nil
 }
 
 func isSignalKilledErr(err error) bool {
@@ -214,9 +220,17 @@ func isSignalKilledErr(err error) bool {
 	return strings.Contains(err.Error(), "signal: killed")
 }
 
-func (l *LauncherNarwhal) awaitStartup(ctx context.Context, readyMsgStream <-chan readyMsg) <-chan struct{} {
-	startupCompleteStream := make(chan struct{})
+func (l *LauncherNarwhal) awaitStartup(ctx context.Context, readyMsgStream <-chan readyMsg) <-chan error {
+	startupCompleteStream := make(chan error)
 	go func() {
+		var startupErrs error
+		defer func() {
+			if startupErrs != nil {
+				startupCompleteStream <- startupErrs
+			}
+			close(startupCompleteStream)
+		}()
+
 		nodes := make(map[string]struct{})
 		for nodeName, authCFG := range l.committeeCFG.Authorities {
 			nodes[nodeName] = struct{}{}
@@ -235,8 +249,21 @@ func (l *LauncherNarwhal) awaitStartup(ctx context.Context, readyMsgStream <-cha
 				}
 				delete(nodes, key)
 
+				if msg.status != "ready" {
+					var workerDesc string
+					if msg.nodeType == "worker" {
+						workerDesc = fmt.Sprintf(" worker(%s)", msg.workerID)
+					}
+
+					label := msg.nodeType
+					if label == "worker" {
+						label = "worker_" + msg.workerID
+					}
+					logFile := l.dirs.nodeLogFile(msg.nodeName, label)
+					err := fmt.Errorf("failed start for node(%s)%s: see %s for logs", msg.nodeName, workerDesc, logFile)
+					startupErrs = multierror.Append(startupErrs, err)
+				}
 				if len(nodes) == 0 {
-					close(startupCompleteStream)
 					return
 				}
 			}
@@ -583,6 +610,9 @@ func writeParametersFile(filename string, grpcAddr string) error {
     "max_batch_delay": "200ms",
     "max_concurrent_requests": 500000,
     "max_header_delay": "2000ms",
+	"prometheus_metrics": {
+        "socket_addr": "127.0.0.1:0"
+    },
     "sync_retry_delay": "10_000ms",
     "sync_retry_nodes": 3
 }`
@@ -597,12 +627,14 @@ func newNarwhalMultiAddr(host, port string) multiaddr {
 var (
 	primaryGRPCReady = []byte("Consensus API gRPC Server listening on ")
 	workerReady      = []byte("successfully booted on ")
+	failedStart      = []byte("Caused by")
 )
 
 type readyMsg struct {
 	nodeType string
 	nodeName string
 	workerID string
+	status   string
 }
 
 type readyTailWriter struct {
@@ -612,7 +644,7 @@ type readyTailWriter struct {
 
 	done        <-chan struct{}
 	readyStream chan<- readyMsg
-	found       bool
+	status      string
 }
 
 func newReadyTailWriter(ctx context.Context, readyStream chan<- readyMsg, nodeType, nodeName, workerID string) *readyTailWriter {
@@ -626,13 +658,20 @@ func newReadyTailWriter(ctx context.Context, readyStream chan<- readyMsg, nodeTy
 }
 
 func (r *readyTailWriter) Write(b []byte) (n int, err error) {
-	if r.found {
+	if r.status != "" {
 		return io.Discard.Write(b)
 	}
 
-	r.found = r.nodeType == "primary" && bytes.Contains(b, primaryGRPCReady) ||
+	isReady := r.nodeType == "primary" && bytes.Contains(b, primaryGRPCReady) ||
 		r.nodeType == "worker" && bytes.Contains(b, workerReady)
-	if r.found {
+	isFailedStart := bytes.Contains(b, failedStart)
+	switch {
+	case isReady:
+		r.status = "ready"
+	case isFailedStart:
+		r.status = "failed start"
+	}
+	if r.status != "" {
 		r.sendReady()
 	}
 
@@ -644,6 +683,7 @@ func (r *readyTailWriter) sendReady() {
 		nodeType: r.nodeType,
 		nodeName: r.nodeName,
 		workerID: r.workerID,
+		status:   r.status,
 	}
 
 	select {
