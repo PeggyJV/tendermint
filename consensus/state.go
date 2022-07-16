@@ -752,6 +752,8 @@ func (cs *State) receiveRoutine(maxSteps int) {
 		var mi msgInfo
 
 		select {
+		// TODO(berg): why do we have this? I'm not following why we have to
+		// 			   go through this? Is this preemption?
 		case <-cs.txNotifier.TxsAvailable():
 			cs.handleTxsAvailable()
 
@@ -942,6 +944,8 @@ func (cs *State) handleTxsAvailable() {
 		}
 
 		// +1ms to ensure RoundStepNewRound timeout always happens after RoundStepNewHeight
+		// TODO(berg): is 1ms a swag or does this 1ms part of a contract between
+		// 			   handlers of round steps?
 		timeoutCommit := cs.StartTime.Sub(tmtime.Now()) + 1*time.Millisecond
 		cs.scheduleTimeout(timeoutCommit, cs.Height, 0, cstypes.RoundStepNewRound)
 

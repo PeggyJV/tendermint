@@ -85,6 +85,9 @@ func New(ctx context.Context, proxyAppCon proxy.AppConnMempool, cfg *config.Narw
 }
 
 func (mem *Mempool) CheckTX(ctx context.Context, tx types.Tx, cb func(checkTx *abci.Response), txInfo mempool.TxInfo) error {
+	// TODO(berg): this looks like a place where we could pull out. The
+	//			   execution of PreCheck is not a mempool specific thing.
+	//			   Well... perhaps it is, worth a look.
 	if err := mem.precheckFn(tx); err != nil {
 		return mempool.ErrPreCheck{Reason: err}
 	}

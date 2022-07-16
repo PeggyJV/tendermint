@@ -244,6 +244,7 @@ func (blockExec *BlockExecutor) Commit(
 		block.Height,
 		block.Txs,
 		deliverTxResponses,
+		// TODO(berg): why are these here? are they resetting after every state update?
 		TxPreCheck(state),
 		TxPostCheck(state),
 	)

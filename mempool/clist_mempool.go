@@ -507,6 +507,9 @@ func (mem *CListMempool) notifyTxsAvailable() {
 	}
 	if mem.txsAvailable != nil && !mem.notifiedTxsAvailable {
 		// channel cap is 1, so this will send once
+		// TODO(berg): not following why we need to make this a buffered chan...
+		//			   Are we sending this, and then later reading from it
+		//			   synchronously?
 		mem.notifiedTxsAvailable = true
 		select {
 		case mem.txsAvailable <- struct{}{}:
@@ -578,6 +581,7 @@ func (mem *CListMempool) Update(
 	mem.height = height
 	mem.notifiedTxsAvailable = false
 
+	// TODO(berg): what is the motivation for resetting the preChekcs on Update?
 	if preCheck != nil {
 		mem.preCheck = preCheck
 	}
@@ -614,6 +618,11 @@ func (mem *CListMempool) Update(
 	if mem.Size() > 0 {
 		if mem.config.Recheck {
 			mem.logger.Debug("recheck txs", "numtxs", mem.Size(), "height", height)
+			// TODO(berg): recheckTXs with narwhal, can really only happen as we
+			//			   are forming a new proposal. We'll have to do checks
+			//			   there as we have no way to update or even list Txs
+			//			   from narwhal without having to traverse the entire DAG
+			//			   which seems less than ideal.
 			mem.recheckTxs()
 			// At this point, mem.txs are being rechecked.
 			// mem.recheckCursor re-scans mem.txs and possibly removes some txs.
