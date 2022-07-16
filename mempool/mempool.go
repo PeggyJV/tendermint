@@ -1,12 +1,64 @@
 package mempool
 
 import (
+	"context"
 	"fmt"
 
 	abci "github.com/tendermint/tendermint/abci/types"
 	"github.com/tendermint/tendermint/p2p"
 	"github.com/tendermint/tendermint/types"
 )
+
+type (
+	// Pool represents the bare minimum functionality for a mempool. It does
+	// not line up exactly with v1 of the mempool. Note that V1 can be updated to
+	// identify with this new interface and then add its additional concerns.
+	Pool[T TXReaper] interface {
+		// CheckTX executes a new transaction against the application to determine
+		// its validity and whether it should be added to the mempool.
+		CheckTX(ctx context.Context, tx types.Tx, callback func(*abci.Response), txInfo TxInfo) error
+
+		// Reap allows the caller to reap certificate digests used for proposal. Callers
+		// can choose whatever predicate suits their needs.
+		Reap(ctx context.Context, opts ReapOpts) (T, error)
+
+		// AfterBlockFinality informs the mempool that the given input were committed and
+		// the mempool may discard/tombstone/etc the targets as needed.
+		AfterBlockFinality(ctx context.Context, blockHeight int64, input T, deliverTxResponses []*abci.ResponseDeliverTx) error
+	}
+
+	// TXReaper is the output of a Reap query for a mempool implemenation. Examples of
+	// this are for hte existing mempools, where we return Txs, and the DAG mempools which
+	// use DAG
+	TXReaper interface {
+		// TXs retrieves TXs for the given DAGCerts. It will take TXs from the
+		// RootCert and ExtraCerts in addition to all the TXs from the descandant
+		// certificates of the RootCert.
+		TXs(ctx context.Context) (types.Txs, error)
+	}
+)
+
+// ReapOpts is the options to reaping a collection useful to proposal from the mempool.
+// A collection for proposal in teh Clist or Priority mempools, would be a list of TXs.
+// For a DAG (narwhal) mempool, we'd want the DAGCerts for the proposal. However,
+// we use the same predicates to reap from all mempools. When a predicate has multiple opts
+// specified, will take the collections that satisfy all limits specified are adhered too.
+//
+// Example predicate: BlockSizeLimit AND NumTXs are both set enforcing that BlockSizeLimit
+//					  and NumTXs limits are satisfied in the Reaping.
+type ReapOpts struct {
+	BlockSizeLimit int64
+	GasLimit       int64
+	NumTXs         int64
+}
+
+// OK validates the options provided.
+func (r ReapOpts) OK() error {
+	if r.BlockSizeLimit <= 0 && r.NumTXs <= 0 && r.GasLimit <= 0 {
+		return fmt.Errorf("at least one of [BlockSizeLimit Gaslimit NumTXs] must be greater than 0")
+	}
+	return nil
+}
 
 // Mempool defines the mempool interface.
 //

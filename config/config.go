@@ -678,6 +678,40 @@ func DefaultFuzzConnConfig() *FuzzConnConfig {
 }
 
 //-----------------------------------------------------------------------------
+// NarwhalMempoolConfig
+
+// NarwhalWorkerConfig is the config for a single worker node.
+type NarwhalWorkerConfig struct {
+	Addr             string `mapstructure:"worker_addr"`
+	EncodedPublicKey string `mapstructure:"worker_base64_public_key"`
+}
+
+func defaultNarwhalWorkerConfig() NarwhalWorkerConfig {
+	return NarwhalWorkerConfig{
+		Addr:             "127.0.0.1:26661",
+		EncodedPublicKey: "",
+	}
+}
+
+// NarwhalMempoolConfig is the config for the narwhal client
+type NarwhalMempoolConfig struct {
+	PrimaryAddr             string                         `mapstructure:"primary_addr"`
+	PrimaryEncodedPublicKey string                         `mapstructure:"primary_base64_public_key"`
+	Workers                 map[string]NarwhalWorkerConfig `mapstructure:"workers"`
+}
+
+// DefaultNarwhalMempoolConfig returns a default configuration for the Tendermint narwhal mempool
+func DefaultNarwhalMempoolConfig() *NarwhalMempoolConfig {
+	return &NarwhalMempoolConfig{
+		PrimaryAddr:             "127.0.0.1:26660",
+		PrimaryEncodedPublicKey: "",
+		Workers: map[string]NarwhalWorkerConfig{
+			"default": defaultNarwhalWorkerConfig(),
+		},
+	}
+}
+
+//-----------------------------------------------------------------------------
 // MempoolConfig
 
 // MempoolConfig defines the configuration options for the Tendermint mempool

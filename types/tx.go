@@ -2,6 +2,7 @@ package types
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 
@@ -28,6 +29,11 @@ func (tx Tx) String() string {
 
 // Txs is a slice of Tx.
 type Txs []Tx
+
+// TXs returns the transactions.
+func (txs Txs) TXs(_ context.Context) (Txs, error) {
+	return txs, nil
+}
 
 // Hash returns the Merkle root hash of the transaction hashes.
 // i.e. the leaves of the tree are the hashes of the txs.
