@@ -3,6 +3,7 @@ package mempool
 import (
 	"bytes"
 	"container/list"
+	"context"
 	"crypto/sha256"
 	"fmt"
 	"sync"
@@ -163,29 +164,28 @@ func (mem *CListMempool) CloseWAL() {
 	mem.wal = nil
 }
 
-// Safe for concurrent use by multiple goroutines.
-func (mem *CListMempool) Lock() {
+// Meta returns the mempool metadata, including size and TXsBytes.
+func (mem *CListMempool) Meta() Meta {
+	return Meta{
+		Size:     mem.txs.Len(),
+		TXsBytes: atomic.LoadInt64(&mem.txsBytes),
+	}
+}
+
+// PrepBlockFinality prepares the mempool for an upcoming block to be finalized. During
+// the execution of the new block, we want to make sure we are not running any additional
+// CheckTX calls to the application as well as flush any active connections underway.
+func (mem *CListMempool) PrepBlockFinality(ctx context.Context) (func(), error) {
 	mem.updateMtx.Lock()
-}
+	unlockFn := func() { mem.updateMtx.Unlock() }
 
-// Safe for concurrent use by multiple goroutines.
-func (mem *CListMempool) Unlock() {
-	mem.updateMtx.Unlock()
-}
+	err := mem.proxyAppConn.FlushSync()
+	if err != nil {
+		unlockFn()
+		return func() {}, err
+	}
 
-// Safe for concurrent use by multiple goroutines.
-func (mem *CListMempool) Size() int {
-	return mem.txs.Len()
-}
-
-// Safe for concurrent use by multiple goroutines.
-func (mem *CListMempool) TxsBytes() int64 {
-	return atomic.LoadInt64(&mem.txsBytes)
-}
-
-// Lock() must be help by the caller during execution.
-func (mem *CListMempool) FlushAppConn() error {
-	return mem.proxyAppConn.FlushSync()
+	return unlockFn, nil
 }
 
 // XXX: Unsafe! Calling Flush may leave mempool in inconsistent state.
@@ -309,7 +309,7 @@ func (mem *CListMempool) globalCb(req *abci.Request, res *abci.Response) {
 	mem.resCbRecheck(req, res)
 
 	// update metrics
-	mem.metrics.Size.Set(float64(mem.Size()))
+	mem.metrics.Size.Set(float64(mem.Meta().Size))
 }
 
 // Request specific callback that should be set on individual reqRes objects
@@ -336,7 +336,7 @@ func (mem *CListMempool) reqResCb(
 		mem.resCbFirstTime(tx, peerID, peerP2PID, res)
 
 		// update metrics
-		mem.metrics.Size.Set(float64(mem.Size()))
+		mem.metrics.Size.Set(float64(mem.Meta().Size))
 
 		// passed in by the caller of CheckTx, eg. the RPC
 		if externalCb != nil {
@@ -380,8 +380,9 @@ func (mem *CListMempool) RemoveTxByKey(txKey [TxKeySize]byte, removeFromCache bo
 
 func (mem *CListMempool) isFull(txSize int) error {
 	var (
-		memSize  = mem.Size()
-		txsBytes = mem.TxsBytes()
+		meta     = mem.Meta()
+		memSize  = meta.Size
+		txsBytes = meta.TXsBytes
 	)
 
 	if memSize >= mem.config.Size || int64(txSize)+txsBytes > mem.config.MaxTxsBytes {
@@ -431,7 +432,7 @@ func (mem *CListMempool) resCbFirstTime(
 				"tx", txID(tx),
 				"res", r,
 				"height", memTx.height,
-				"total", mem.Size(),
+				"total", mem.Meta().Size,
 			)
 			mem.notifyTxsAvailable()
 		} else {
@@ -486,7 +487,7 @@ func (mem *CListMempool) resCbRecheck(req *abci.Request, res *abci.Response) {
 			mem.logger.Debug("done rechecking txs")
 
 			// incase the recheck removed all txs
-			if mem.Size() > 0 {
+			if mem.Meta().Size > 0 {
 				mem.notifyTxsAvailable()
 			}
 		}
@@ -501,7 +502,7 @@ func (mem *CListMempool) TxsAvailable() <-chan struct{} {
 }
 
 func (mem *CListMempool) notifyTxsAvailable() {
-	if mem.Size() == 0 {
+	if mem.Meta().Size == 0 {
 		panic("notified txs available but mempool is empty!")
 	}
 	if mem.txsAvailable != nil && !mem.notifiedTxsAvailable {
@@ -610,9 +611,10 @@ func (mem *CListMempool) Update(
 
 	// Either recheck non-committed txs to see if they became invalid
 	// or just notify there're some txs left.
-	if mem.Size() > 0 {
+	size := mem.Meta().Size
+	if size > 0 {
 		if mem.config.Recheck {
-			mem.logger.Debug("recheck txs", "numtxs", mem.Size(), "height", height)
+			mem.logger.Debug("recheck txs", "numtxs", size, "height", height)
 			mem.recheckTxs()
 			// At this point, mem.txs are being rechecked.
 			// mem.recheckCursor re-scans mem.txs and possibly removes some txs.
@@ -623,13 +625,13 @@ func (mem *CListMempool) Update(
 	}
 
 	// Update metrics
-	mem.metrics.Size.Set(float64(mem.Size()))
+	mem.metrics.Size.Set(float64(size))
 
 	return nil
 }
 
 func (mem *CListMempool) recheckTxs() {
-	if mem.Size() == 0 {
+	if mem.Meta().Size == 0 {
 		panic("recheckTxs is called, but the mempool is empty")
 	}
 

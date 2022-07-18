@@ -1,6 +1,7 @@
 package mempool
 
 import (
+	"context"
 	"fmt"
 
 	abci "github.com/tendermint/tendermint/abci/types"
@@ -17,6 +18,10 @@ type Mempool interface {
 	// its validity and whether it should be added to the mempool.
 	CheckTx(tx types.Tx, callback func(*abci.Response), txInfo TxInfo) error
 
+	// PrepBlockFinality prepares the mempool for finalizing a block. This may require
+	// locking or other concerns that must be handled before a block is safe to commit.
+	PrepBlockFinality(ctx context.Context) (finishFn func(), err error)
+
 	// ReapMaxBytesMaxGas reaps transactions from the mempool up to maxBytes
 	// bytes total with the condition that the total gasWanted must be less than
 	// maxGas.
@@ -29,12 +34,6 @@ type Mempool interface {
 	// transactions (~ all available transactions).
 	ReapMaxTxs(max int) types.Txs
 
-	// Lock locks the mempool. The consensus must be able to hold lock to safely update.
-	Lock()
-
-	// Unlock unlocks the mempool.
-	Unlock()
-
 	// Update informs the mempool that the given txs were committed and can be discarded.
 	// NOTE: this should be called *after* block is committed by consensus.
 	// NOTE: Lock/Unlock must be managed by caller
@@ -45,11 +44,6 @@ type Mempool interface {
 		newPreFn PreCheckFunc,
 		newPostFn PostCheckFunc,
 	) error
-
-	// FlushAppConn flushes the mempool connection to ensure async reqResCb calls are
-	// done. E.g. from CheckTx.
-	// NOTE: Lock/Unlock must be managed by caller
-	FlushAppConn() error
 
 	// Flush removes all transactions from the mempool and cache
 	Flush()
@@ -63,11 +57,8 @@ type Mempool interface {
 	// trigger once every height when transactions are available.
 	EnableTxsAvailable()
 
-	// Size returns the number of transactions in the mempool.
-	Size() int
-
-	// TxsBytes returns the total size of all txs in the mempool.
-	TxsBytes() int64
+	// Meta returns metadat for the mempool.
+	Meta() Meta
 
 	// InitWAL creates a directory for the WAL file and opens a file itself. If
 	// there is an error, it will be of type *PathError.
@@ -76,6 +67,13 @@ type Mempool interface {
 	// CloseWAL closes and discards the underlying WAL file.
 	// Any further writes will not be relayed to disk.
 	CloseWAL()
+}
+
+// Meta provides metadat regarding a mempool. The size and TXsBytes being >= 0
+// indicates the metadata is valid for the given mempool.
+type Meta struct {
+	Size     int
+	TXsBytes int64
 }
 
 //--------------------------------------------------------------------------------

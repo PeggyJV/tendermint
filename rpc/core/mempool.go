@@ -139,20 +139,24 @@ func UnconfirmedTxs(ctx *rpctypes.Context, limitPtr *int) (*ctypes.ResultUnconfi
 	limit := validatePerPage(limitPtr)
 
 	txs := env.Mempool.ReapMaxTxs(limit)
+	meta := env.Mempool.Meta()
 	return &ctypes.ResultUnconfirmedTxs{
 		Count:      len(txs),
-		Total:      env.Mempool.Size(),
-		TotalBytes: env.Mempool.TxsBytes(),
-		Txs:        txs}, nil
+		Total:      meta.Size,
+		TotalBytes: meta.TXsBytes,
+		Txs:        txs,
+	}, nil
 }
 
 // NumUnconfirmedTxs gets number of unconfirmed transactions.
 // More: https://docs.tendermint.com/master/rpc/#/Info/num_unconfirmed_txs
 func NumUnconfirmedTxs(ctx *rpctypes.Context) (*ctypes.ResultUnconfirmedTxs, error) {
+	meta := env.Mempool.Meta()
 	return &ctypes.ResultUnconfirmedTxs{
-		Count:      env.Mempool.Size(),
-		Total:      env.Mempool.Size(),
-		TotalBytes: env.Mempool.TxsBytes()}, nil
+		Count:      meta.Size,
+		Total:      meta.Size,
+		TotalBytes: meta.TXsBytes,
+	}, nil
 }
 
 // CheckTx checks the transaction without executing it. The transaction won't

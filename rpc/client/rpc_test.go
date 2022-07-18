@@ -334,7 +334,7 @@ func TestBroadcastTxSync(t *testing.T) {
 
 	// TODO (melekes): use mempool which is set on RPC rather than getting it from node
 	mempool := node.Mempool()
-	initMempoolSize := mempool.Size()
+	initMempoolSize := mempool.Meta().Size
 
 	for i, c := range GetClients() {
 		_, _, tx := MakeTxKV()
@@ -342,7 +342,7 @@ func TestBroadcastTxSync(t *testing.T) {
 		require.Nil(err, "%d: %+v", i, err)
 		require.Equal(bres.Code, abci.CodeTypeOK) // FIXME
 
-		require.Equal(initMempoolSize+1, mempool.Size())
+		require.Equal(initMempoolSize+1, mempool.Meta().Size)
 
 		txs := mempool.ReapMaxTxs(len(tx))
 		require.EqualValues(tx, txs[0])
@@ -361,7 +361,7 @@ func TestBroadcastTxCommit(t *testing.T) {
 		require.True(bres.CheckTx.IsOK())
 		require.True(bres.DeliverTx.IsOK())
 
-		require.Equal(0, mempool.Size())
+		require.Equal(0, mempool.Meta().Size)
 	}
 }
 
@@ -388,7 +388,7 @@ func TestUnconfirmedTxs(t *testing.T) {
 
 		assert.Equal(t, 1, res.Count)
 		assert.Equal(t, 1, res.Total)
-		assert.Equal(t, mempool.TxsBytes(), res.TotalBytes)
+		assert.Equal(t, mempool.Meta().TXsBytes, res.TotalBytes)
 		assert.Exactly(t, types.Txs{tx}, types.Txs(res.Txs))
 	}
 
@@ -410,7 +410,7 @@ func TestNumUnconfirmedTxs(t *testing.T) {
 		t.Error("Timed out waiting for CheckTx callback")
 	}
 
-	mempoolSize := mempool.Size()
+	mempoolSize := mempool.Meta().Size
 	for i, c := range GetClients() {
 		mc, ok := c.(client.MempoolClient)
 		require.True(t, ok, "%d", i)
@@ -419,7 +419,7 @@ func TestNumUnconfirmedTxs(t *testing.T) {
 
 		assert.Equal(t, mempoolSize, res.Count)
 		assert.Equal(t, mempoolSize, res.Total)
-		assert.Equal(t, mempool.TxsBytes(), res.TotalBytes)
+		assert.Equal(t, mempool.Meta().TXsBytes, res.TotalBytes)
 	}
 
 	mempool.Flush()
@@ -435,7 +435,7 @@ func TestCheckTx(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, abci.CodeTypeOK, res.Code)
 
-		assert.Equal(t, 0, mempool.Size(), "mempool must be empty")
+		assert.Equal(t, 0, mempool.Meta().Size, "mempool must be empty")
 	}
 }
 
