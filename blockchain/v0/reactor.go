@@ -52,7 +52,7 @@ type BlockchainReactor struct {
 	// immutable
 	initialState sm.State
 
-	blockExec *sm.BlockExecutor
+	blockExec *sm.BlockExecutor[types.Txs]
 	store     *store.BlockStore
 	pool      *BlockPool
 	fastSync  bool
@@ -62,7 +62,7 @@ type BlockchainReactor struct {
 }
 
 // NewBlockchainReactor returns new reactor instance.
-func NewBlockchainReactor(state sm.State, blockExec *sm.BlockExecutor, store *store.BlockStore,
+func NewBlockchainReactor(state sm.State, blockExec *sm.BlockExecutor[types.Txs], store *store.BlockStore,
 	fastSync bool) *BlockchainReactor {
 
 	if state.LastBlockHeight != store.Height() {

@@ -210,7 +210,7 @@ type Node struct {
 	blockStore        *store.BlockStore // store the blockchain to disk
 	bcReactor         p2p.Reactor       // for fast-syncing
 	mempoolReactor    *mempl.Reactor    // for gossipping transactions
-	mempool           mempl.Mempool
+	mempool           mempl.Mempool[types.Txs]
 	stateSync         bool                    // whether the node should state sync on startup
 	stateSyncReactor  *statesync.Reactor      // for hosting and restoring state sync snapshots
 	stateSyncProvider statesync.StateProvider // provides state data for bootstrapping a node
@@ -401,7 +401,7 @@ func createEvidenceReactor(config *cfg.Config, dbProvider DBProvider,
 
 func createBlockchainReactor(config *cfg.Config,
 	state sm.State,
-	blockExec *sm.BlockExecutor,
+	blockExec *sm.BlockExecutor[types.Txs],
 	blockStore *store.BlockStore,
 	fastSync bool,
 	logger log.Logger) (bcReactor p2p.Reactor, err error) {
@@ -423,7 +423,7 @@ func createBlockchainReactor(config *cfg.Config,
 
 func createConsensusReactor(config *cfg.Config,
 	state sm.State,
-	blockExec *sm.BlockExecutor,
+	blockExec *sm.BlockExecutor[types.Txs],
 	blockStore sm.BlockStore,
 	mempool *mempl.CListMempool,
 	evidencePool *evidence.Pool,
@@ -761,13 +761,13 @@ func NewNode(config *cfg.Config,
 	}
 
 	// make block executor for consensus and blockchain reactors to execute blocks
-	blockExec := sm.NewBlockExecutor(
+	blockExec := sm.NewBlockExecutor[types.Txs](
 		stateStore,
 		logger.With("module", "state"),
 		proxyApp.Consensus(),
 		mempool,
 		evidencePool,
-		sm.BlockExecutorWithMetrics(smMetrics),
+		sm.BlockExecutorWithMetrics[types.Txs](smMetrics),
 	)
 
 	// Make BlockchainReactor. Don't start fast sync if we're doing a state sync first.
@@ -1229,7 +1229,7 @@ func (n *Node) MempoolReactor() *mempl.Reactor {
 }
 
 // Mempool returns the Node's mempool.
-func (n *Node) Mempool() mempl.Mempool {
+func (n *Node) Mempool() mempl.Mempool[types.Txs] {
 	return n.mempool
 }
 

@@ -23,7 +23,7 @@ import (
 // then commits and updates the mempool atomically, then saves state.
 
 // BlockExecutor provides the context and accessories for properly executing a block.
-type BlockExecutor struct {
+type BlockExecutor[T mempl.TXReaper] struct {
 	// save state, validators, consensus params, abci responses here
 	store Store
 
@@ -35,7 +35,7 @@ type BlockExecutor struct {
 
 	// manage the mempool lock during commit
 	// and update both with block results after commit.
-	mempool mempl.Mempool
+	mempool mempl.Mempool[T]
 	evpool  EvidencePool
 
 	logger log.Logger
@@ -43,25 +43,25 @@ type BlockExecutor struct {
 	metrics *Metrics
 }
 
-type BlockExecutorOption func(executor *BlockExecutor)
+type BlockExecutorOption[T mempl.TXReaper] func(executor *BlockExecutor[T])
 
-func BlockExecutorWithMetrics(metrics *Metrics) BlockExecutorOption {
-	return func(blockExec *BlockExecutor) {
+func BlockExecutorWithMetrics[T mempl.TXReaper](metrics *Metrics) BlockExecutorOption[T] {
+	return func(blockExec *BlockExecutor[T]) {
 		blockExec.metrics = metrics
 	}
 }
 
 // NewBlockExecutor returns a new BlockExecutor with a NopEventBus.
 // Call SetEventBus to provide one.
-func NewBlockExecutor(
+func NewBlockExecutor[T mempl.TXReaper](
 	stateStore Store,
 	logger log.Logger,
 	proxyApp proxy.AppConnConsensus,
-	mempool mempl.Mempool,
+	mempool mempl.Mempool[T],
 	evpool EvidencePool,
-	options ...BlockExecutorOption,
-) *BlockExecutor {
-	res := &BlockExecutor{
+	options ...BlockExecutorOption[T],
+) *BlockExecutor[T] {
+	res := &BlockExecutor[T]{
 		store:    stateStore,
 		proxyApp: proxyApp,
 		eventBus: types.NopEventBus{},
@@ -78,13 +78,13 @@ func NewBlockExecutor(
 	return res
 }
 
-func (blockExec *BlockExecutor) Store() Store {
+func (blockExec *BlockExecutor[T]) Store() Store {
 	return blockExec.store
 }
 
 // SetEventBus - sets the event bus for publishing block related events.
 // If not called, it defaults to types.NopEventBus.
-func (blockExec *BlockExecutor) SetEventBus(eventBus types.BlockEventPublisher) {
+func (blockExec *BlockExecutor[T]) SetEventBus(eventBus types.BlockEventPublisher) {
 	blockExec.eventBus = eventBus
 }
 
@@ -92,21 +92,32 @@ func (blockExec *BlockExecutor) SetEventBus(eventBus types.BlockEventPublisher) 
 // and txs from the mempool. The max bytes must be big enough to fit the commit.
 // Up to 1/10th of the block space is allcoated for maximum sized evidence.
 // The rest is given to txs, up to the max gas.
-func (blockExec *BlockExecutor) CreateProposalBlock(
+func (blockExec *BlockExecutor[T]) CreateProposalBlock(
 	height int64,
 	state State, commit *types.Commit,
 	proposerAddr []byte,
 ) (*types.Block, *types.PartSet) {
-
-	maxBytes := state.ConsensusParams.Block.MaxBytes
-	maxGas := state.ConsensusParams.Block.MaxGas
+	ctx := context.TODO()
 
 	evidence, evSize := blockExec.evpool.PendingEvidence(state.ConsensusParams.Evidence.MaxBytes)
 
-	// Fetch a limited amount of valid txs
-	maxDataBytes := types.MaxDataBytes(maxBytes, evSize, state.Validators.Size())
+	opts := []mempl.ReapOptFn{
+		mempl.ReapBytes(types.MaxDataBytes(state.ConsensusParams.Block.MaxBytes, evSize, state.Validators.Size())),
+		mempl.ReapGas(state.ConsensusParams.Block.MaxGas),
+	}
 
-	txs := blockExec.mempool.ReapMaxBytesMaxGas(maxDataBytes, maxGas)
+	reaper, err := blockExec.mempool.Reap(ctx, opts...)
+	if err != nil {
+		// should never get here atm, all mempools atm do not return any error on reaps
+		panic("mempool returned an unexpected error on reap: " + err.Error())
+	}
+
+	txs, err := reaper.TXs(ctx)
+	if err != nil {
+		// should never get here atm, the only type that implements this is types.TXs
+		// which never returns an error.
+		panic("tx reaper returned an unexpected error: " + err.Error())
+	}
 
 	return state.MakeBlock(height, txs, commit, evidence, proposerAddr)
 }
@@ -115,7 +126,7 @@ func (blockExec *BlockExecutor) CreateProposalBlock(
 // If the block is invalid, it returns an error.
 // Validation does not mutate state, but does require historical information from the stateDB,
 // ie. to verify evidence from a validator at an old height.
-func (blockExec *BlockExecutor) ValidateBlock(state State, block *types.Block) error {
+func (blockExec *BlockExecutor[T]) ValidateBlock(state State, block *types.Block) error {
 	err := validateBlock(state, block)
 	if err != nil {
 		return err
@@ -129,7 +140,7 @@ func (blockExec *BlockExecutor) ValidateBlock(state State, block *types.Block) e
 // It's the only function that needs to be called
 // from outside this package to process and commit an entire block.
 // It takes a blockID to avoid recomputing the parts hash.
-func (blockExec *BlockExecutor) ApplyBlock(
+func (blockExec *BlockExecutor[T]) ApplyBlock(
 	state State, blockID types.BlockID, block *types.Block,
 ) (State, int64, error) {
 
@@ -209,7 +220,7 @@ func (blockExec *BlockExecutor) ApplyBlock(
 // The Mempool must be locked during commit and update because state is
 // typically reset on Commit and old txs must be replayed against committed
 // state before new txs are run in the mempool, lest they be invalid.
-func (blockExec *BlockExecutor) Commit(
+func (blockExec *BlockExecutor[T]) Commit(
 	state State,
 	block *types.Block,
 	deliverTxResponses []*abci.ResponseDeliverTx,

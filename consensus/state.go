@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/gogo/protobuf/proto"
-
 	cfg "github.com/tendermint/tendermint/config"
 	cstypes "github.com/tendermint/tendermint/consensus/types"
 	"github.com/tendermint/tendermint/crypto"
@@ -86,7 +85,7 @@ type State struct {
 	blockStore sm.BlockStore
 
 	// create and execute blocks
-	blockExec *sm.BlockExecutor
+	blockExec *sm.BlockExecutor[types.Txs]
 
 	// notify us if txs are available
 	txNotifier txNotifier
@@ -149,7 +148,7 @@ type StateOption func(*State)
 func NewState(
 	config *cfg.ConsensusConfig,
 	state sm.State,
-	blockExec *sm.BlockExecutor,
+	blockExec *sm.BlockExecutor[types.Txs],
 	blockStore sm.BlockStore,
 	txNotifier txNotifier,
 	evpool evidencePool,

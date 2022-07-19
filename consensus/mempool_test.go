@@ -1,6 +1,7 @@
 package consensus
 
 import (
+	"context"
 	"encoding/binary"
 	"fmt"
 	"os"
@@ -20,8 +21,8 @@ import (
 )
 
 // for testing
-func assertMempool(txn txNotifier) mempl.Mempool {
-	return txn.(mempl.Mempool)
+func assertMempool(txn txNotifier) mempl.Mempool[types.Txs] {
+	return txn.(mempl.Mempool[types.Txs])
 }
 
 func TestMempoolNoProgressUntilTxsAvailable(t *testing.T) {
@@ -173,7 +174,7 @@ func TestMempoolRmBadTx(t *testing.T) {
 
 		// check for the tx
 		for {
-			txs := assertMempool(cs.txNotifier).ReapMaxBytesMaxGas(int64(len(txBytes)), -1)
+			txs, _ := assertMempool(cs.txNotifier).Reap(context.TODO(), mempl.ReapBytes(int64(len(txBytes))))
 			if len(txs) == 0 {
 				emptyMempoolCh <- struct{}{}
 				return

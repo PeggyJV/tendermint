@@ -14,7 +14,6 @@ import (
 	auto "github.com/tendermint/tendermint/libs/autofile"
 	"github.com/tendermint/tendermint/libs/clist"
 	"github.com/tendermint/tendermint/libs/log"
-	tmmath "github.com/tendermint/tendermint/libs/math"
 	tmos "github.com/tendermint/tendermint/libs/os"
 	tmsync "github.com/tendermint/tendermint/libs/sync"
 	"github.com/tendermint/tendermint/p2p"
@@ -74,7 +73,7 @@ type CListMempool struct {
 	metrics *Metrics
 }
 
-var _ Mempool = &CListMempool{}
+var _ Mempool[types.Txs] = &CListMempool{}
 
 // CListMempoolOption sets an optional parameter on the mempool.
 type CListMempoolOption func(*CListMempool)
@@ -515,55 +514,43 @@ func (mem *CListMempool) notifyTxsAvailable() {
 	}
 }
 
-// Safe for concurrent use by multiple goroutines.
-func (mem *CListMempool) ReapMaxBytesMaxGas(maxBytes, maxGas int64) types.Txs {
+// Reap fulfills the reaping of TXs behavior and works on types.TXs. All fields provided will
+// be disabled if provided with a value < 0. All field predicates default to -1, resulting in
+// a call to Reap returning all TXs.
+func (mem *CListMempool) Reap(ctx context.Context, opts ...ReapOptFn) (types.Txs, error) {
+	opt := CoalesceReapOpts(opts...)
+
 	mem.updateMtx.RLock()
 	defer mem.updateMtx.RUnlock()
 
 	var totalGas int64
 
-	// TODO: we will get a performance boost if we have a good estimate of avg
-	// size per tx, and set the initial capacity based off of that.
-	// txs := make([]types.Tx, 0, tmmath.MinInt(mem.txs.Len(), max/mem.avgTxSize))
 	txs := make([]types.Tx, 0, mem.txs.Len())
 	for e := mem.txs.Front(); e != nil; e = e.Next() {
+		if opt.NumTXs > -1 && opt.NumTXs <= len(txs) {
+			break
+		}
 		memTx := e.Value.(*mempoolTx)
 
-		dataSize := types.ComputeProtoSizeForTxs(append(txs, memTx.tx))
-
 		// Check total size requirement
-		if maxBytes > -1 && dataSize > maxBytes {
-			return txs
+		if opt.BlockSizeLimit > -1 &&
+			opt.BlockSizeLimit < types.ComputeProtoSizeForTxs(append(txs, memTx.tx)) {
+			break
 		}
+
 		// Check total gas requirement.
 		// If maxGas is negative, skip this check.
 		// Since newTotalGas < masGas, which
 		// must be non-negative, it follows that this won't overflow.
 		newTotalGas := totalGas + memTx.gasWanted
-		if maxGas > -1 && newTotalGas > maxGas {
-			return txs
+		if opt.GasLimit > -1 && opt.GasLimit < newTotalGas {
+			break
 		}
 		totalGas = newTotalGas
 		txs = append(txs, memTx.tx)
 	}
-	return txs
-}
 
-// Safe for concurrent use by multiple goroutines.
-func (mem *CListMempool) ReapMaxTxs(max int) types.Txs {
-	mem.updateMtx.RLock()
-	defer mem.updateMtx.RUnlock()
-
-	if max < 0 {
-		max = mem.txs.Len()
-	}
-
-	txs := make([]types.Tx, 0, tmmath.MinInt(mem.txs.Len(), max))
-	for e := mem.txs.Front(); e != nil && len(txs) <= max; e = e.Next() {
-		memTx := e.Value.(*mempoolTx)
-		txs = append(txs, memTx.tx)
-	}
-	return txs
+	return txs, nil
 }
 
 // Lock() must be help by the caller during execution.

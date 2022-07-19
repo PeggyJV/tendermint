@@ -138,7 +138,11 @@ func UnconfirmedTxs(ctx *rpctypes.Context, limitPtr *int) (*ctypes.ResultUnconfi
 	// reuse per_page validator
 	limit := validatePerPage(limitPtr)
 
-	txs := env.Mempool.ReapMaxTxs(limit)
+	txs, err := env.Mempool.Reap(ctx.Context(), mempl.ReapTXs(limit))
+	if err != nil {
+		return nil, err
+	}
+
 	meta := env.Mempool.Meta()
 	return &ctypes.ResultUnconfirmedTxs{
 		Count:      len(txs),

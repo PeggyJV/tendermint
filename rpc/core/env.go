@@ -92,7 +92,7 @@ type Environment struct {
 	BlockIndexer     indexer.BlockIndexer
 	ConsensusReactor *consensus.Reactor
 	EventBus         *types.EventBus // thread safe
-	Mempool          mempl.Mempool
+	Mempool          mempl.Mempool[types.Txs]
 
 	Logger log.Logger
 
