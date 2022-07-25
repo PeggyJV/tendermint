@@ -12,25 +12,23 @@ import (
 // Mempool is an empty implementation of a Mempool, useful for testing.
 type Mempool struct{}
 
-var _ mempool.MempoolABCI = Mempool{}
-
 func (Mempool) Size() int { return 0 }
 func (Mempool) CheckTx(context.Context, types.Tx, func(*abci.ResponseCheckTx), mempool.TxInfo) error {
 	return nil
 }
-func (m Mempool) Remove(ctx context.Context, opts ...mempool.RemOptFn) error { return nil }
-func (Mempool) RemoveTxByKey(txKey types.TxKey) error                        { return nil }
-func (m Mempool) PoolMeta() mempool.PoolMeta                                 { return mempool.PoolMeta{} }
+func (m Mempool) Remove(ctx context.Context, opts ...mempool.RemOptFn) error    { return nil }
+func (Mempool) RemoveTxByKey(txKey types.TxKey) error                           { return nil }
+func (m Mempool) PoolMeta() mempool.PoolMeta                                    { return mempool.PoolMeta{} }
+func (m Mempool) HydrateBlockTxs(ctx context.Context, block *types.Block) error { return nil }
 func (Mempool) PrepBlockFinality(ctx context.Context) (finishFn func(), err error) {
 	return func() {}, nil
 }
-func (m Mempool) Reap(ctx context.Context, opts ...mempool.ReapOptFn) (types.Txs, error) {
+func (m Mempool) Reap(ctx context.Context, opts ...mempool.ReapOptFn) (types.TxReaper, error) {
 	return types.Txs{}, nil
 }
-func (Mempool) Update(
+func (Mempool) AfterBlockFinality(
 	_ context.Context,
-	_ int64,
-	_ types.Txs,
+	_ *types.Block,
 	_ []*abci.ExecTxResult,
 	_ mempool.PreCheckFunc,
 	_ mempool.PostCheckFunc,

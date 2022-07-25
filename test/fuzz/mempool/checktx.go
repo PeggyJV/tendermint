@@ -11,8 +11,8 @@ import (
 )
 
 var (
-	mp        mempool.MempoolABCI
-	getMpABCI func() mempool.MempoolABCI
+	mp        *mempool.ABCI
+	getMpABCI func() *mempool.ABCI
 )
 
 func init() {
@@ -27,7 +27,7 @@ func init() {
 	cfg := config.DefaultMempoolConfig()
 	cfg.Broadcast = false
 
-	getMpABCI = func() mempool.MempoolABCI {
+	getMpABCI = func() *mempool.ABCI {
 		if mp == nil {
 			pool := mempool.NewTxMempool(logger, cfg, conn)
 			mp = mempool.NewABCI(cfg, conn, pool, nil)

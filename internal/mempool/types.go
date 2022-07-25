@@ -31,60 +31,45 @@ const (
 	StatusTxsAvailable = "txs_available"
 )
 
-type MempoolABCI interface {
+// TxChecker performs a check on a Tx, typically when submitting a tx to the
+// MempoolABCI.
+type TxChecker interface {
 	// CheckTx executes a new transaction against the application to determine
 	// its validity and whether it should be added to the mempool.
 	CheckTx(ctx context.Context, tx types.Tx, callback func(*abci.ResponseCheckTx), txInfo TxInfo) error
+}
 
-	// EnableTxsAvailable initializes the TxsAvailable channel, ensuring it will
-	// trigger once every height when transactions are available.
-	EnableTxsAvailable()
+// Pool defines the underlying pool storage engine behavior.
+type Pool interface {
+	// CheckTxCallback is called by the ABCI type during CheckTx. When called by ABCI,
+	// the CheckTxCallback can assume the ABCI type will hold the app write lock.
+	CheckTxCallback(ctx context.Context, tx types.Tx, res *abci.ResponseCheckTx, txInfo TxInfo) (OpResult, error)
 
-	// Flush clears all caches in the MempoolABCI and clear any volatile
-	// memory within the pool.
+	// Flush removes all transactions from the mempool.
 	Flush(ctx context.Context) error
 
-	// PoolMeta returns the metadata for the underlying pool implementation.
-	PoolMeta() PoolMeta
+	HydrateBlockTxs(ctx context.Context, block *types.Block) error
 
-	// PrepBlockFinality prepares the mempool for finalizing a block. This may require
-	// locking or other concerns that must be handled before a block is safe to commit.
-	PrepBlockFinality(ctx context.Context) (finishFn func(), err error)
+	// Meta returns metadata for the pool.
+	Meta() PoolMeta
+
+	// OnBlockFinality is called by the ABCI client after the block has been committed.
+	// The ABCI type requires the caller to have called PrepBlockFinality before issuing
+	// an Update, thus forcing the caller to acquire the lock before Update and subsequently,
+	// this OnBlockFinality call is made.
+	OnBlockFinality(ctx context.Context, block *types.Block, newPostFn PostCheckFunc) (OpResult, error)
 
 	// Reap returns Txs from the given pool. It is up to the pool implementation to define
 	// how they handle the possible predicates from option combinations.
-	Reap(ctx context.Context, opts ...ReapOptFn) (types.Txs, error)
+	Reap(ctx context.Context, opts ...ReapOptFn) (types.TxReaper, error)
 
-	// Remove removes Txs from the given pool. It is up to the pool implementation to
-	// define how they handle the possible predicates from option combinations.
-	Remove(ctx context.Context, opts ...RemOptFn) error
-
-	// TxsAvailable returns a channel which fires once for every height, and only
-	// when transactions are available in the mempool.
-	//
-	// NOTE: The returned channel may be nil if EnableTxsAvailable was not called.
-	TxsAvailable() <-chan struct{}
-
-	// Update informs the mempool that the given txs were committed and can be
-	// discarded.
-	//
-	// NOTE:
-	// 	1. This should be called *after* block is committed by consensus.
-	// 	2. PrepBlockFinality must be called before calling Update, effectively
-	//		preparing the MempoolABCI -> App communication so that the application
-	//		state is correct.
-	Update(
-		ctx context.Context,
-		blockHeight int64,
-		blockTxs types.Txs,
-		txResults []*abci.ExecTxResult,
-		newPreFn PreCheckFunc,
-		newPostFn PostCheckFunc,
-	) error
+	// Remove removes txs by the provided RemOptFn. If an argument is provided to the
+	// options that don't make sense for the given pool, then it will be ignored.
+	Remove(ctx context.Context, opts ...RemOptFn) (OpResult, error)
 }
 
 // OpResult is the result of a pool operation. This result informs the ABCI type
-// what happened in the storage/pool layer so it can maintain cache coherence.
+// what happened in the storage/pool layer, so it can maintain cache coherence.
 type OpResult struct {
 	AddedTxs   types.Txs
 	RemovedTxs types.Txs
@@ -99,39 +84,6 @@ type PoolMeta struct {
 	Size int
 	// TotalBytes is a measure of the store's data size.
 	TotalBytes int64
-}
-
-// Pool defines the underlying pool storage engine behavior.
-type Pool interface {
-	// CheckTxCallback is called by the ABCI type during CheckTx. When called by ABCI,
-	// the CheckTxCallback can assume the ABCI type will hold the app write lock.
-	CheckTxCallback(ctx context.Context, tx types.Tx, res *abci.ResponseCheckTx, txInfo TxInfo) (OpResult, error)
-
-	// Flush removes all transactions from the mempool and caches.
-	Flush(ctx context.Context) error
-
-	// Meta returns metadata for the pool.
-	Meta() PoolMeta
-
-	// OnUpdate is called by the ABCI on an Update. The ABCI type requires the caller
-	// to have called PrepBlockFinality before issuing an Update, thus forcing the
-	// caller to acquire the lock before Update and subsequently, this OnUpdate call
-	// is made.
-	OnUpdate(
-		ctx context.Context,
-		blockHeight int64,
-		blockTxs types.Txs,
-		txResults []*abci.ExecTxResult,
-		newPostFn PostCheckFunc,
-	) (OpResult, error)
-
-	// Reap returns Txs from the given pool. It is up to the pool implementation to define
-	// how they handle the possible predicates from option combinations.
-	Reap(ctx context.Context, opts ...ReapOptFn) (types.Txs, error)
-
-	// Remove removes txs by the provided RemOptFn. If an argument is provided to the
-	// options that don't make sense for the given pool, then it will be ignored.
-	Remove(ctx context.Context, opts ...RemOptFn) (OpResult, error)
 }
 
 // DisableReapOpt sets the reap opt to disabled. This is the default value for all

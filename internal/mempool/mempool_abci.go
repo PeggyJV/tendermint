@@ -29,8 +29,6 @@ type ABCI struct {
 	preCheck PreCheckFunc
 }
 
-var _ MempoolABCI = (*ABCI)(nil)
-
 // NewABCI constructs a new ABCI type.
 func NewABCI(cfg *config.MempoolConfig, appClient abciclient.Client, pool Pool, preCheck PreCheckFunc) *ABCI {
 	out := ABCI{
@@ -132,6 +130,12 @@ func (a *ABCI) Flush(ctx context.Context) error {
 	return a.pool.Flush(ctx)
 }
 
+func (a *ABCI) HydrateBlockTxs(ctx context.Context, block *types.Block) error {
+	// TODO(berg): do we want to do any checks before hand? Like non-empty txs
+	//				and certs?
+	return a.pool.HydrateBlockTxs(ctx, block)
+}
+
 // PoolMeta returns the metadata for the underlying pool implementation.
 func (a *ABCI) PoolMeta() PoolMeta {
 	return a.pool.Meta()
@@ -154,7 +158,7 @@ func (a *ABCI) PrepBlockFinality(ctx context.Context) (func(), error) {
 }
 
 // Reap calls the underlying pool's Reap method with the given options.
-func (a *ABCI) Reap(ctx context.Context, opts ...ReapOptFn) (types.Txs, error) {
+func (a *ABCI) Reap(ctx context.Context, opts ...ReapOptFn) (types.TxReaper, error) {
 	return a.pool.Reap(ctx, opts...)
 }
 
@@ -169,9 +173,9 @@ func (a *ABCI) Remove(ctx context.Context, opts ...RemOptFn) error {
 	return nil
 }
 
-// Update iterates over all the transactions provided by the block producer,
-// removes them from the cache (if applicable), and removes
-// the transactions from the main transaction store and associated indexes.
+// AfterBlockFinality iterates over all the transactions provided by the block
+// producer, removes them from the cache (if applicable), and removes the
+// transactions from the main transaction store and associated indexes.
 // If there are transactions remaining in the mempool, we initiate a
 // re-CheckTx for them (if applicable), otherwise, we notify the caller more
 // transactions are available.
@@ -180,10 +184,9 @@ func (a *ABCI) Remove(ctx context.Context, opts ...RemOptFn) error {
 // - The caller must explicitly call PrepBlockFinality, which locks the client
 //	 and flushes the appconn to enforce we sync state correctly with the app
 //	 on Update. Failure to do so will result in an error.
-func (a *ABCI) Update(
+func (a *ABCI) AfterBlockFinality(
 	ctx context.Context,
-	blockHeight int64,
-	blockTxs types.Txs,
+	block *types.Block,
 	txResults []*abci.ExecTxResult,
 	newPreFn PreCheckFunc,
 	newPostFn PostCheckFunc,
@@ -200,14 +203,15 @@ func (a *ABCI) Update(
 		a.preCheck = newPreFn
 	}
 
-	// TODO(berg): the use of newPostFn is very involved in the current
-	//			   design that couples abci and mempool concerns. Need to
-	//			   investigate possiblity of breaking that down so only
-	//			   ABCI is in charge of PostCheckFuncs. Feels like a concern
-	//			   that belongs to ABCI and not the individual mempool
-	//			   implementations. Then again... it may make sense in the
-	//			   Pool itself :thinking_face:...
-	opRes, err := a.pool.OnUpdate(ctx, blockHeight, blockTxs, txResults, newPostFn)
+	for i := range block.Txs {
+		cacheOp := a.addToCache
+		if txResults[i].Code != abci.CodeTypeOK {
+			cacheOp = a.removeFromCache
+		}
+		cacheOp(block.Txs[i])
+	}
+
+	opRes, err := a.pool.OnBlockFinality(ctx, block, newPostFn)
 	if err != nil {
 		return err
 	}
@@ -224,18 +228,30 @@ func (a *ABCI) TxsAvailable() <-chan struct{} {
 
 func (a *ABCI) applyOpResult(o OpResult) {
 	for _, tx := range o.AddedTxs {
-		a.cache.Push(tx)
+		a.addToCache(tx)
 	}
 
-	if !a.cfg.KeepInvalidTxsInCache {
-		for _, tx := range o.RemovedTxs {
-			a.cache.Remove(tx)
-		}
+	for _, tx := range o.RemovedTxs {
+		a.removeFromCache(tx)
 	}
 
-	if o.Status == StatusTxsAvailable {
+	switch o.Status {
+	case StatusTxsAvailable:
 		a.notifyTxsAvailable()
+	default:
+		// do nothing
 	}
+}
+
+func (a *ABCI) addToCache(tx types.Tx) {
+	a.cache.Push(tx)
+}
+
+func (a *ABCI) removeFromCache(tx types.Tx) {
+	if a.cfg.KeepInvalidTxsInCache {
+		return
+	}
+	a.cache.Remove(tx)
 }
 
 func (a *ABCI) notifyTxsAvailable() {

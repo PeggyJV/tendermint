@@ -30,7 +30,7 @@ type reactorTestSuite struct {
 
 	reactors        map[types.NodeID]*Reactor
 	mempoolChannels map[types.NodeID]*p2p.Channel
-	mempools        map[types.NodeID]MempoolABCI
+	mempools        map[types.NodeID]*ABCI
 	kvstores        map[types.NodeID]*kvstore.Application
 
 	peerChans   map[types.NodeID]chan p2p.PeerUpdate
@@ -51,7 +51,7 @@ func setupReactors(ctx context.Context, t *testing.T, numNodes int, chBuf uint) 
 		network:         p2ptest.MakeNetwork(ctx, t, p2ptest.NetworkOptions{NumNodes: numNodes}),
 		reactors:        make(map[types.NodeID]*Reactor, numNodes),
 		mempoolChannels: make(map[types.NodeID]*p2p.Channel, numNodes),
-		mempools:        make(map[types.NodeID]MempoolABCI, numNodes),
+		mempools:        make(map[types.NodeID]*ABCI, numNodes),
 		kvstores:        make(map[types.NodeID]*kvstore.Application, numNodes),
 		peerChans:       make(map[types.NodeID]chan p2p.PeerUpdate, numNodes),
 		peerUpdates:     make(map[types.NodeID]*p2p.PeerUpdates, numNodes),
@@ -135,7 +135,7 @@ func (rts *reactorTestSuite) waitForTxns(t *testing.T, txs []types.Tx, ids ...ty
 		}
 
 		wg.Add(1)
-		go func(mp MempoolABCI) {
+		go func(mp *ABCI) {
 			defer wg.Done()
 			require.Eventually(t, func() bool { return len(txs) == mp.PoolMeta().Size },
 				time.Minute,
@@ -249,7 +249,11 @@ func TestReactorConcurrency(t *testing.T) {
 				deliverTxResponses[i] = &abci.ExecTxResult{Code: 0}
 			}
 
-			require.NoError(t, mempool.Update(ctx, 1, convertTex(txs), deliverTxResponses, nil, nil))
+			block := &types.Block{
+				Header: types.Header{Height: 1},
+				Data:   types.Data{Txs: convertTex(txs)},
+			}
+			require.NoError(t, mempool.AfterBlockFinality(ctx, block, deliverTxResponses, nil, nil))
 		}()
 
 		// 1. submit a bunch of txs
@@ -264,7 +268,11 @@ func TestReactorConcurrency(t *testing.T) {
 			require.NoError(t, err)
 			defer finisher()
 
-			err = mempool.Update(ctx, 1, []types.Tx{}, make([]*abci.ExecTxResult, 0), nil, nil)
+			block := &types.Block{
+				Header: types.Header{Height: 1},
+				Data:   types.Data{Txs: []types.Tx{}},
+			}
+			err = mempool.AfterBlockFinality(ctx, block, make([]*abci.ExecTxResult, 0), nil, nil)
 			require.NoError(t, err)
 		}()
 	}

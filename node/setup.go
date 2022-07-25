@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	_ "net/http/pprof" // nolint: gosec // securely exposed on separate, optional port
 	"strings"
 	"time"
 
@@ -34,8 +35,6 @@ import (
 	tmgrpc "github.com/tendermint/tendermint/privval/grpc"
 	"github.com/tendermint/tendermint/types"
 	"github.com/tendermint/tendermint/version"
-
-	_ "net/http/pprof" // nolint: gosec // securely exposed on separate, optional port
 )
 
 type closer func() error
@@ -177,7 +176,7 @@ func createMempoolReactor(
 	peerManager *p2p.PeerManager,
 	router *p2p.Router,
 	logger log.Logger,
-) (service.Service, mempool.MempoolABCI, error) {
+) (service.Service, *mempool.ABCI, error) {
 	logger = logger.With("module", "mempool")
 
 	mp := mempool.NewTxMempool(
@@ -256,7 +255,7 @@ func createConsensusReactor(
 	store sm.Store,
 	blockExec *sm.BlockExecutor,
 	blockStore sm.BlockStore,
-	mp mempool.MempoolABCI,
+	mp *mempool.ABCI,
 	evidencePool *evidence.Pool,
 	privValidator types.PrivValidator,
 	csMetrics *consensus.Metrics,

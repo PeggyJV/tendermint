@@ -8,6 +8,7 @@ import (
 	"github.com/tendermint/tendermint/internal/libs/clist"
 	"github.com/tendermint/tendermint/internal/mempool"
 	"github.com/tendermint/tendermint/internal/proxy"
+	sm "github.com/tendermint/tendermint/internal/state"
 	"github.com/tendermint/tendermint/libs/log"
 	tmstate "github.com/tendermint/tendermint/proto/tendermint/state"
 	"github.com/tendermint/tendermint/types"
@@ -17,7 +18,7 @@ import (
 
 type emptyMempool struct{}
 
-var _ mempool.MempoolABCI = emptyMempool{}
+var _ sm.Mempool = emptyMempool{}
 
 func (emptyMempool) Lock()     {}
 func (emptyMempool) Unlock()   {}
@@ -26,10 +27,15 @@ func (emptyMempool) CheckTx(context.Context, types.Tx, func(*abci.ResponseCheckT
 	return nil
 }
 func (m emptyMempool) PoolMeta() mempool.PoolMeta { return mempool.PoolMeta{} }
+func (m emptyMempool) AfterBlockFinality(ctx context.Context, block *types.Block, txResults []*abci.ExecTxResult, newPreFn mempool.PreCheckFunc, newPostFn mempool.PostCheckFunc) error {
+	return nil
+}
+
+func (m emptyMempool) HydrateBlockTxs(ctx context.Context, block *types.Block) error { return nil }
 func (m emptyMempool) PrepBlockFinality(ctx context.Context) (finishFn func(), err error) {
 	return func() {}, nil
 }
-func (m emptyMempool) Reap(ctx context.Context, opts ...mempool.ReapOptFn) (types.Txs, error) {
+func (m emptyMempool) Reap(ctx context.Context, opts ...mempool.ReapOptFn) (types.TxReaper, error) {
 	return types.Txs{}, nil
 }
 func (m emptyMempool) Remove(ctx context.Context, opts ...mempool.RemOptFn) error { return nil }

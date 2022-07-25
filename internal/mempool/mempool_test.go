@@ -73,7 +73,7 @@ func (app *application) CheckTx(req abci.RequestCheckTx) abci.ResponseCheckTx {
 	}
 }
 
-func setup(ctx context.Context, t testing.TB, cacheSize int, options ...TxMempoolOption) (*TxMempool, MempoolABCI) {
+func setup(ctx context.Context, t testing.TB, cacheSize int, options ...TxMempoolOption) (*TxMempool, *ABCI) {
 	t.Helper()
 
 	var cancel context.CancelFunc
@@ -103,7 +103,7 @@ func setup(ctx context.Context, t testing.TB, cacheSize int, options ...TxMempoo
 	return mp, mpABCI
 }
 
-func checkTxs(ctx context.Context, t *testing.T, mp MempoolABCI, numTxs int, peerID uint16) []testTx {
+func checkTxs(ctx context.Context, t *testing.T, mp *ABCI, numTxs int, peerID uint16) []testTx {
 	t.Helper()
 
 	txs := make([]testTx, numTxs)
@@ -188,8 +188,17 @@ func TestTxMempool_TxsAvailable(t *testing.T) {
 
 	finishFn, err := mpABCI.PrepBlockFinality(ctx)
 	require.NoError(t, err)
+
+	block := &types.Block{
+		Header: types.Header{
+			Height: 1,
+		},
+		Data: types.Data{
+			Txs: rawTxs[:50],
+		},
+	}
 	// commit half the transactions and ensure we fire an event
-	require.NoError(t, mpABCI.Update(ctx, 1, rawTxs[:50], responses, nil, nil))
+	require.NoError(t, mpABCI.AfterBlockFinality(ctx, block, responses, nil, nil))
 	finishFn()
 	ensureTxFire(t)
 	ensureNoTxFire(t)
@@ -221,7 +230,12 @@ func TestTxMempool_Size(t *testing.T) {
 
 	finishFn, err := mpABCI.PrepBlockFinality(ctx)
 	require.NoError(t, err)
-	require.NoError(t, mpABCI.Update(ctx, 1, rawTxs[:50], responses, nil, nil))
+
+	block := &types.Block{
+		Header: types.Header{Height: 1},
+		Data:   types.Data{Txs: rawTxs[:50]},
+	}
+	require.NoError(t, mpABCI.AfterBlockFinality(ctx, block, responses, nil, nil))
 	finishFn()
 
 	assert.Equal(t, len(rawTxs)/2, mpABCI.PoolMeta().Size)
@@ -249,7 +263,12 @@ func TestTxMempool_Flush(t *testing.T) {
 
 	finishFn, err := mpABCI.PrepBlockFinality(ctx)
 	require.NoError(t, err)
-	require.NoError(t, mpABCI.Update(ctx, 1, rawTxs[:50], responses, nil, nil))
+
+	block := &types.Block{
+		Header: types.Header{Height: 1},
+		Data:   types.Data{Txs: rawTxs[:50]},
+	}
+	require.NoError(t, mpABCI.AfterBlockFinality(ctx, block, responses, nil, nil))
 	finishFn()
 
 	require.NoError(t, mpABCI.Flush(ctx))
@@ -278,35 +297,41 @@ func TestTxMempool_ReapMaxBytesMaxGas(t *testing.T) {
 		return priorities[i] > priorities[j]
 	})
 
-	ensurePrioritized := func(reapedTxs types.Txs) {
+	ensurePrioritized := func(t *testing.T, reaper types.TxReaper) types.Txs {
+		t.Helper()
+
+		reapedTxs, err := reaper.Txs(ctx)
+		require.NoError(t, err)
+
 		reapedPriorities := make([]int64, len(reapedTxs))
 		for i, rTx := range reapedTxs {
 			reapedPriorities[i] = txMap[rTx.Key()].priority
 		}
 
 		require.Equal(t, priorities[:len(reapedPriorities)], reapedPriorities)
+		return reapedTxs
 	}
 
 	// reap by gas capacity only
-	reapedTxs, err := mpABCI.Reap(ctx, ReapGas(50))
+	reaper, err := mpABCI.Reap(ctx, ReapGas(50))
 	require.NoError(t, err)
-	ensurePrioritized(reapedTxs)
+	reapedTxs := ensurePrioritized(t, reaper)
 	require.Equal(t, len(tTxs), mpABCI.PoolMeta().Size)
 	require.Equal(t, int64(5690), mpABCI.PoolMeta().TotalBytes)
 	require.Len(t, reapedTxs, 50)
 
 	// reap by transaction bytes only
-	reapedTxs, err = mpABCI.Reap(ctx, ReapBytes(1000))
+	reaper, err = mpABCI.Reap(ctx, ReapBytes(1000))
 	require.NoError(t, err)
-	ensurePrioritized(reapedTxs)
+	reapedTxs = ensurePrioritized(t, reaper)
 	require.Equal(t, len(tTxs), mpABCI.PoolMeta().Size)
 	require.Equal(t, int64(5690), mpABCI.PoolMeta().TotalBytes)
 	require.GreaterOrEqual(t, len(reapedTxs), 16)
 
 	// Reap by both transaction bytes and gas, where the size yields 31 reaped
 	// transactions and the gas limit reaps 25 transactions.
-	reapedTxs, err = mpABCI.Reap(ctx, ReapBytes(1500), ReapGas(30))
-	ensurePrioritized(reapedTxs)
+	reaper, err = mpABCI.Reap(ctx, ReapBytes(1500), ReapGas(30))
+	reapedTxs = ensurePrioritized(t, reaper)
 	require.Equal(t, len(tTxs), mpABCI.PoolMeta().Size)
 	require.Equal(t, int64(5690), mpABCI.PoolMeta().TotalBytes)
 	require.Len(t, reapedTxs, 25)
@@ -333,35 +358,42 @@ func TestTxMempool_ReapMaxTxs(t *testing.T) {
 		return priorities[i] > priorities[j]
 	})
 
-	ensurePrioritized := func(reapedTxs types.Txs) {
+	ensurePrioritized := func(t *testing.T, reaper types.TxReaper) types.Txs {
+		t.Helper()
+
+		reapedTxs, err := reaper.Txs(ctx)
+		require.NoError(t, err)
+
 		reapedPriorities := make([]int64, len(reapedTxs))
 		for i, rTx := range reapedTxs {
 			reapedPriorities[i] = txMap[rTx.Key()].priority
 		}
 
 		require.Equal(t, priorities[:len(reapedPriorities)], reapedPriorities)
+
+		return reapedTxs
 	}
 
 	// reap all transactions
-	reapedTxs, err := mpABCI.Reap(ctx)
+	reaper, err := mpABCI.Reap(ctx)
 	require.NoError(t, err)
-	ensurePrioritized(reapedTxs)
+	reapedTxs := ensurePrioritized(t, reaper)
 	require.Equal(t, len(tTxs), mpABCI.PoolMeta().Size)
 	require.Equal(t, int64(5690), mpABCI.PoolMeta().TotalBytes)
 	require.Len(t, reapedTxs, len(tTxs))
 
 	// reap a single transaction
-	reapedTxs, err = mpABCI.Reap(ctx, ReapTxs(1))
+	reaper, err = mpABCI.Reap(ctx, ReapTxs(1))
 	require.NoError(t, err)
-	ensurePrioritized(reapedTxs)
+	reapedTxs = ensurePrioritized(t, reaper)
 	require.Equal(t, len(tTxs), mpABCI.PoolMeta().Size)
 	require.Equal(t, int64(5690), mpABCI.PoolMeta().TotalBytes)
 	require.Len(t, reapedTxs, 1)
 
 	// reap half of the transactions
-	reapedTxs, err = mpABCI.Reap(ctx, ReapTxs(len(tTxs)/2))
+	reaper, err = mpABCI.Reap(ctx, ReapTxs(len(tTxs)/2))
 	require.NoError(t, err)
-	ensurePrioritized(reapedTxs)
+	reapedTxs = ensurePrioritized(t, reaper)
 	require.Equal(t, len(tTxs), mpABCI.PoolMeta().Size)
 	require.Equal(t, int64(5690), mpABCI.PoolMeta().TotalBytes)
 	require.Len(t, reapedTxs, len(tTxs)/2)
@@ -461,8 +493,11 @@ func TestTxMempool_ConcurrentTxs(t *testing.T) {
 		var height int64 = 1
 
 		for range ticker.C {
-			reapedTxs, err := mpABCI.Reap(ctx, ReapTxs(200))
+			reaper, err := mpABCI.Reap(ctx, ReapTxs(200))
 			require.NoError(t, err)
+			reapedTxs, err := reaper.Txs(ctx)
+			require.NoError(t, err)
+
 			if len(reapedTxs) > 0 {
 				responses := make([]*abci.ExecTxResult, len(reapedTxs))
 				for i := 0; i < len(responses); i++ {
@@ -479,7 +514,12 @@ func TestTxMempool_ConcurrentTxs(t *testing.T) {
 
 				finishFn, err := mpABCI.PrepBlockFinality(ctx)
 				require.NoError(t, err)
-				require.NoError(t, mpABCI.Update(ctx, height, reapedTxs, responses, nil, nil))
+
+				block := &types.Block{
+					Header: types.Header{Height: height},
+					Data:   types.Data{Txs: reapedTxs},
+				}
+				require.NoError(t, mpABCI.AfterBlockFinality(ctx, block, responses, nil, nil))
 				finishFn()
 
 				height++
@@ -512,8 +552,12 @@ func TestTxMempool_ExpiredTxs_NumBlocks(t *testing.T) {
 	require.Equal(t, 100, txmp.heightIndex.Size())
 
 	// reap 5 txs at the next height -- no txs should expire
-	reapedTxs, err := mpABCI.Reap(ctx, ReapTxs(5))
+	reaper, err := mpABCI.Reap(ctx, ReapTxs(5))
 	require.NoError(t, err)
+
+	reapedTxs, err := reaper.Txs(ctx)
+	require.NoError(t, err)
+
 	responses := make([]*abci.ExecTxResult, len(reapedTxs))
 	for i := 0; i < len(responses); i++ {
 		responses[i] = &abci.ExecTxResult{Code: abci.CodeTypeOK}
@@ -521,7 +565,12 @@ func TestTxMempool_ExpiredTxs_NumBlocks(t *testing.T) {
 
 	finisher, err := mpABCI.PrepBlockFinality(ctx)
 	require.NoError(t, err)
-	require.NoError(t, mpABCI.Update(ctx, txmp.height+1, reapedTxs, responses, nil, nil))
+
+	block := &types.Block{
+		Header: types.Header{Height: txmp.height + 1},
+		Data:   types.Data{Txs: reapedTxs},
+	}
+	require.NoError(t, mpABCI.AfterBlockFinality(ctx, block, responses, nil, nil))
 	finisher()
 
 	require.Equal(t, 95, mpABCI.PoolMeta().Size)
@@ -539,15 +588,21 @@ func TestTxMempool_ExpiredTxs_NumBlocks(t *testing.T) {
 	// initial CheckTx calls or from the second round of CheckTx calls. Thus, we
 	// cannot guarantee that all 95 txs are remaining that should be expired and
 	// removed. However, we do know that at most 95 txs can be expired and removed.
-	reapedTxs, err = mpABCI.Reap(ctx, ReapTxs(5))
+	reaper, err = mpABCI.Reap(ctx, ReapTxs(5))
 	require.NoError(t, err)
+
+	reapedTxs, err = reaper.Txs(ctx)
+	require.NoError(t, err)
+
 	responses = make([]*abci.ExecTxResult, len(reapedTxs))
 	for i := 0; i < len(responses); i++ {
 		responses[i] = &abci.ExecTxResult{Code: abci.CodeTypeOK}
 	}
 
 	finisher, err = mpABCI.PrepBlockFinality(ctx)
-	require.NoError(t, mpABCI.Update(ctx, txmp.height+10, reapedTxs, responses, nil, nil))
+
+	block.Header.Height = txmp.height + 10
+	require.NoError(t, mpABCI.AfterBlockFinality(ctx, block, responses, nil, nil))
 	finisher()
 
 	require.GreaterOrEqual(t, mpABCI.PoolMeta().Size, 45)

@@ -456,8 +456,12 @@ func TestClientMethodCalls(t *testing.T) {
 
 				require.Equal(t, initMempoolSize+1, pool.PoolMeta().Size)
 
-				txs, err := pool.Reap(ctx, mempool.ReapTxs(len(tx)))
+				reaper, err := pool.Reap(ctx, mempool.ReapTxs(len(tx)))
 				require.NoError(t, err)
+
+				txs, err := reaper.Txs(ctx)
+				require.NoError(t, err)
+
 				require.EqualValues(t, tx, txs[0])
 				require.NoError(t, pool.Flush(ctx))
 			})
@@ -568,7 +572,7 @@ func TestClientMethodCalls(t *testing.T) {
 	}
 }
 
-func getMempool(t *testing.T, srv service.Service) mempool.MempoolABCI {
+func getMempool(t *testing.T, srv service.Service) *mempool.ABCI {
 	t.Helper()
 	n, ok := srv.(interface {
 		RPCEnvironment() *rpccore.Environment

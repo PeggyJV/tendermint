@@ -135,10 +135,16 @@ func (env *Environment) UnconfirmedTxs(ctx context.Context, pagePtr, perPagePtr 
 
 	skipCount := validateSkipCount(page, perPage)
 
-	txs, err := env.Mempool.Reap(ctx, mempool.ReapTxs(skipCount+tmmath.MinInt(perPage, totalCount-skipCount)))
+	reaper, err := env.Mempool.Reap(ctx, mempool.ReapTxs(skipCount+tmmath.MinInt(perPage, totalCount-skipCount)))
 	if err != nil {
 		return nil, err
 	}
+
+	txs, err := reaper.Txs(ctx)
+	if err != nil {
+		return nil, err
+	}
+
 	result := txs[skipCount:]
 
 	return &coretypes.ResultUnconfirmedTxs{

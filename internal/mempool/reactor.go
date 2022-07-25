@@ -37,7 +37,7 @@ type Reactor struct {
 	logger log.Logger
 
 	cfg       *config.MempoolConfig
-	txChecker MempoolABCI
+	txChecker TxChecker
 	mempool   *TxMempool
 	ids       *IDs
 
@@ -63,7 +63,7 @@ func NewReactor(
 	logger log.Logger,
 	cfg *config.MempoolConfig,
 	peerMgr PeerManager,
-	txChecker MempoolABCI,
+	txChecker TxChecker,
 	txmp *TxMempool,
 	chCreator p2p.ChannelCreator,
 	peerUpdates *p2p.PeerUpdates,

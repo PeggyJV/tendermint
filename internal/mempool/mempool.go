@@ -189,6 +189,11 @@ func (txmp *TxMempool) CheckTxCallback(ctx context.Context, tx types.Tx, res *ab
 	return opRes, nil
 }
 
+func (txmp *TxMempool) HydrateBlockTxs(ctx context.Context, block *types.Block) error {
+	// There is nothing to do at this point....
+	return nil
+}
+
 // Remove removes txs from the underlying store.
 func (txmp *TxMempool) Remove(ctx context.Context, opts ...RemOptFn) (OpResult, error) {
 	opt := CoalesceRemOptFns(opts...)
@@ -249,7 +254,7 @@ func (txmp *TxMempool) Flush(ctx context.Context) error {
 // Reap will return a list of TXs by the chose input. As of writing this, this implementation
 // only supports providing either NumTxs or one of GasLimit BlockSizeLimit. Providing non
 // default values for all values, will result in an error.
-func (txmp *TxMempool) Reap(ctx context.Context, opts ...ReapOptFn) (types.Txs, error) {
+func (txmp *TxMempool) Reap(ctx context.Context, opts ...ReapOptFn) (types.TxReaper, error) {
 	opt := CoalesceReapOpts(opts...)
 
 	if opt.NumTxs > -1 && (opt.GasLimit > -1 || opt.BlockSizeLimit > -1) {
@@ -350,30 +355,21 @@ func (txmp *TxMempool) reapMaxTxs(max int) types.Txs {
 	return txs
 }
 
-// OnUpdate performs an update to the mempool store. These updates can generate
-// rejected txs, i.e. when a recheck tx is no longer valid.
-func (txmp *TxMempool) OnUpdate(
+// OnBlockFinality performs an update to the mempool. These updates can generate
+// rejected txs, i.e. when a rechecked tx is no longer valid.
+func (txmp *TxMempool) OnBlockFinality(
 	ctx context.Context,
-	blockHeight int64,
-	blockTxs types.Txs,
-	txResults []*abci.ExecTxResult,
+	block *types.Block,
 	newPostFn PostCheckFunc,
 ) (OpResult, error) {
+	blockHeight, blockTxs := block.Height, block.Txs
 	txmp.height = blockHeight
 	if newPostFn != nil {
 		txmp.postCheck = newPostFn
 	}
 
 	var opRes OpResult
-	for i, tx := range blockTxs {
-		if txResults[i].Code == abci.CodeTypeOK {
-			// add the valid committed transaction to the cache (if missing)
-			opRes.AddedTxs = append(opRes.AddedTxs, tx)
-		} else if !txmp.config.KeepInvalidTxsInCache {
-			// allow invalid transactions to be re-submitted
-			opRes.RemovedTxs = append(opRes.RemovedTxs, tx)
-		}
-
+	for _, tx := range blockTxs {
 		// remove the committed transaction from the transaction store and indexes
 		if wtx := txmp.txStore.GetTxByHash(tx.Key()); wtx != nil {
 			txmp.removeTx(wtx)

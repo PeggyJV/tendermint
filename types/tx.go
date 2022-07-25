@@ -2,6 +2,7 @@ package types
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"errors"
 	"fmt"
@@ -11,6 +12,12 @@ import (
 	tmbytes "github.com/tendermint/tendermint/libs/bytes"
 	tmproto "github.com/tendermint/tendermint/proto/tendermint/types"
 )
+
+// TxReaper returns a list of txs.
+type TxReaper interface {
+	Txs(context.Context) (Txs, error)
+	DecorateBlock(ctx context.Context, block *Block)
+}
 
 // Tx is an arbitrary byte array.
 // NOTE: Tx has no types at this level, so when wire encoded it's just length-prefixed.
@@ -28,6 +35,15 @@ func (tx Tx) String() string { return fmt.Sprintf("Tx{%X}", []byte(tx)) }
 
 // Txs is a slice of Tx.
 type Txs []Tx
+
+func (txs Txs) Txs(ctx context.Context) (Txs, error) {
+	return txs, nil
+}
+
+func (txs Txs) DecorateBlock(ctx context.Context, bl *Block) {
+	// TODO(berg): this feels a bit broken, with how narwhal works and how Txs
+	//			   currently works, it kinda spells confusion for me :thinking_face:
+}
 
 // Hash returns the Merkle root hash of the transaction hashes.
 // i.e. the leaves of the tree are the hashes of the txs.

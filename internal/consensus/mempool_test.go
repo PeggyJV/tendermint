@@ -22,9 +22,9 @@ import (
 )
 
 // for testing
-func assertMempool(t *testing.T, txn txNotifier) mempool.MempoolABCI {
+func assertMempool(t *testing.T, txn txNotifier) *mempool.ABCI {
 	t.Helper()
-	return txn.(mempool.MempoolABCI)
+	return txn.(*mempool.ABCI)
 }
 
 func TestMempoolNoProgressUntilTxsAvailable(t *testing.T) {
@@ -216,8 +216,12 @@ func TestMempoolRmBadTx(t *testing.T) {
 
 		// check for the tx
 		for {
-			txs, err := assertMempool(t, cs.txNotifier).Reap(ctx, mempool.ReapBytes(int64(len(txBytes))))
+			reaper, err := assertMempool(t, cs.txNotifier).Reap(ctx, mempool.ReapBytes(int64(len(txBytes))))
 			require.NoError(t, err)
+
+			txs, err := reaper.Txs(ctx)
+			require.NoError(t, err)
+
 			if len(txs) == 0 {
 				emptyMempoolCh <- struct{}{}
 				return
