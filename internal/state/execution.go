@@ -21,6 +21,20 @@ import (
 // It exposes ApplyBlock(), which validates & executes the block, updates state w/ ABCI responses,
 // then commits and updates the mempool atomically, then saves state.
 
+// Mempool defines the mempool behavior the block executor depends on.
+type Mempool interface {
+	AfterBlockFinality(
+		ctx context.Context,
+		block *types.Block,
+		txResults []*abci.ExecTxResult,
+		newPreFn mempool.PreCheckFunc,
+		newPostFn mempool.PostCheckFunc,
+	) error
+	HydrateBlockTxs(ctx context.Context, block *types.Block) error
+	PrepBlockFinality(ctx context.Context) (func(), error)
+	Reap(ctx context.Context, opts ...mempool.ReapOptFn) (types.TxReaper, error)
+}
+
 // BlockExecutor provides the context and accessories for properly executing a block.
 type BlockExecutor struct {
 	// save state, validators, consensus params, abci responses here
@@ -37,7 +51,7 @@ type BlockExecutor struct {
 
 	// manage the mempool lock during commit
 	// and update both with block results after commit.
-	mempool mempool.Mempool
+	mempool Mempool
 	evpool  EvidencePool
 
 	logger  log.Logger
@@ -61,7 +75,7 @@ func NewBlockExecutor(
 	stateStore Store,
 	logger log.Logger,
 	appClient abciclient.Client,
-	pool mempool.Mempool,
+	pool Mempool,
 	evpool EvidencePool,
 	blockStore BlockStore,
 	eventBus *eventbus.EventBus,
@@ -112,8 +126,20 @@ func (blockExec *BlockExecutor) CreateProposalBlock(
 	// Fetch a limited amount of valid txs
 	maxDataBytes := types.MaxDataBytes(maxBytes, evSize, state.Validators.Size())
 
-	txs := blockExec.mempool.ReapMaxBytesMaxGas(maxDataBytes, maxGas)
+	reaper, err := blockExec.mempool.Reap(ctx, mempool.ReapBytes(maxDataBytes), mempool.ReapGas(maxGas))
+	if err != nil {
+		// returning an error is pertinent... with mempools that aren't in mem,
+		// i.e. a DAG mempool like narwhal, we need the ability to handle errors
+		// before calling prepare proposal.
+		return nil, nil, err
+	}
 
+	txs, err := reaper.Txs(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// TODO(berg): BlockData.... how do we decorate/replace it with narwhal?
 	preparedProposal, err := blockExec.appClient.PrepareProposal(
 		ctx,
 		abci.RequestPrepareProposal{
@@ -133,6 +159,7 @@ func (blockExec *BlockExecutor) CreateProposalBlock(
 		// purpose for now.
 		panic(err)
 	}
+
 	newTxs := preparedProposal.GetBlockData()
 	var txSize int
 	for _, tx := range newTxs {
@@ -143,9 +170,15 @@ func (blockExec *BlockExecutor) CreateProposalBlock(
 		}
 	}
 
-	modifiedTxs := types.ToTxs(preparedProposal.GetBlockData())
+	modifiedTxs := types.ToTxs(newTxs)
 
-	return state.MakeBlock(height, modifiedTxs, commit, evidence, proposerAddr)
+	block, partset, err := state.MakeBlock(height, modifiedTxs, commit, evidence, proposerAddr)
+	if err != nil {
+		return nil, nil, err
+	}
+	reaper.DecorateBlock(ctx, block)
+
+	return block, partset, nil
 }
 
 func (blockExec *BlockExecutor) ProcessProposal(
@@ -153,6 +186,11 @@ func (blockExec *BlockExecutor) ProcessProposal(
 	block *types.Block,
 	state State,
 ) (bool, error) {
+	err := blockExec.mempool.HydrateBlockTxs(ctx, block)
+	if err != nil {
+		return false, err
+	}
+
 	req := abci.RequestProcessProposal{
 		Hash:                block.Header.Hash(),
 		Header:              *block.Header.ToProto(),
@@ -174,12 +212,17 @@ func (blockExec *BlockExecutor) ProcessProposal(
 // Validation does not mutate state, but does require historical information from the stateDB,
 // ie. to verify evidence from a validator at an old height.
 func (blockExec *BlockExecutor) ValidateBlock(ctx context.Context, state State, block *types.Block) error {
+	err := blockExec.mempool.HydrateBlockTxs(ctx, block)
+	if err != nil {
+		return err
+	}
+
 	hash := block.Hash()
 	if _, ok := blockExec.cache[hash.String()]; ok {
 		return nil
 	}
 
-	err := validateBlock(state, block)
+	err = validateBlock(state, block)
 	if err != nil {
 		return err
 	}
@@ -202,7 +245,9 @@ func (blockExec *BlockExecutor) ValidateBlock(ctx context.Context, state State, 
 func (blockExec *BlockExecutor) ApplyBlock(
 	ctx context.Context,
 	state State,
-	blockID types.BlockID, block *types.Block) (State, error) {
+	blockID types.BlockID,
+	block *types.Block,
+) (State, error) {
 	// validate the block if we haven't already
 	if err := blockExec.ValidateBlock(ctx, state, block); err != nil {
 		return state, ErrInvalidBlock(err)
@@ -249,7 +294,13 @@ func (blockExec *BlockExecutor) ApplyBlock(
 	}
 
 	// Update the state with the block and responses.
-	state, err = state.Update(blockID, &block.Header, ABCIResponsesResultsHash(abciResponses), finalizeBlockResponse.ConsensusParamUpdates, validatorUpdates)
+	state, err = state.Update(
+		blockID,
+		&block.Header,
+		ABCIResponsesResultsHash(abciResponses),
+		finalizeBlockResponse.ConsensusParamUpdates,
+		validatorUpdates,
+	)
 	if err != nil {
 		return state, fmt.Errorf("commit failed for application: %w", err)
 	}
@@ -330,16 +381,11 @@ func (blockExec *BlockExecutor) Commit(
 	block *types.Block,
 	txResults []*abci.ExecTxResult,
 ) ([]byte, int64, error) {
-	blockExec.mempool.Lock()
-	defer blockExec.mempool.Unlock()
-
-	// while mempool is Locked, flush to ensure all async requests have completed
-	// in the ABCI app before Commit.
-	err := blockExec.mempool.FlushAppConn(ctx)
+	finishFn, err := blockExec.mempool.PrepBlockFinality(ctx)
 	if err != nil {
-		blockExec.logger.Error("client error during mempool.FlushAppConn", "err", err)
 		return nil, 0, err
 	}
+	defer finishFn()
 
 	// Commit block, get hash back
 	res, err := blockExec.appClient.Commit(ctx)
@@ -357,10 +403,9 @@ func (blockExec *BlockExecutor) Commit(
 	)
 
 	// Update mempool.
-	err = blockExec.mempool.Update(
+	err = blockExec.mempool.AfterBlockFinality(
 		ctx,
-		block.Height,
-		block.Txs,
+		block,
 		txResults,
 		TxPreCheckForState(state),
 		TxPostCheckForState(state),
