@@ -66,6 +66,7 @@ type Config struct {
 	RPC             *RPCConfig             `mapstructure:"rpc"`
 	P2P             *P2PConfig             `mapstructure:"p2p"`
 	Mempool         *MempoolConfig         `mapstructure:"mempool"`
+	Narwhal         *NarwhalMempoolConfig  `mapstructure:"narwhal"`
 	StateSync       *StateSyncConfig       `mapstructure:"statesync"`
 	Consensus       *ConsensusConfig       `mapstructure:"consensus"`
 	TxIndex         *TxIndexConfig         `mapstructure:"tx-index"`
@@ -722,6 +723,40 @@ func TestP2PConfig() *P2PConfig {
 	cfg.AllowDuplicateIP = true
 	cfg.FlushThrottleTimeout = 10 * time.Millisecond
 	return cfg
+}
+
+//-----------------------------------------------------------------------------
+// NarwhalMempoolConfig
+
+// NarwhalWorkerConfig is the config for a single worker node.
+type NarwhalWorkerConfig struct {
+	Addr             string `mapstructure:"worker_addr"`
+	EncodedPublicKey string `mapstructure:"worker_base64_public_key"`
+}
+
+func defaultNarwhalWorkerConfig() NarwhalWorkerConfig {
+	return NarwhalWorkerConfig{
+		Addr:             "127.0.0.1:26661",
+		EncodedPublicKey: "",
+	}
+}
+
+// NarwhalMempoolConfig is the config for the narwhal client
+type NarwhalMempoolConfig struct {
+	PrimaryAddr             string                         `mapstructure:"primary_addr"`
+	PrimaryEncodedPublicKey string                         `mapstructure:"primary_base64_public_key"`
+	Workers                 map[string]NarwhalWorkerConfig `mapstructure:"workers"`
+}
+
+// DefaultNarwhalMempoolConfig returns a default configuration for the Tendermint narwhal mempool
+func DefaultNarwhalMempoolConfig() *NarwhalMempoolConfig {
+	return &NarwhalMempoolConfig{
+		PrimaryAddr:             "127.0.0.1:26660",
+		PrimaryEncodedPublicKey: "",
+		Workers: map[string]NarwhalWorkerConfig{
+			"default": defaultNarwhalWorkerConfig(),
+		},
+	}
 }
 
 //-----------------------------------------------------------------------------

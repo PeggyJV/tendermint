@@ -546,7 +546,7 @@ func (h *Header) ToProto() *tmproto.Header {
 	}
 }
 
-// FromProto sets a protobuf Header to the given pointer.
+// HeaderFromProto sets a protobuf Header to the given pointer.
 // It returns an error if the header is invalid.
 func HeaderFromProto(ph *tmproto.Header) (Header, error) {
 	if ph == nil {
@@ -1013,6 +1013,8 @@ type Data struct {
 	// This means that block.AppHash does not include these txs.
 	Txs Txs `json:"txs"`
 
+	Certificates *DAGCerts `json:"certificates"`
+
 	// Volatile
 	hash tmbytes.HexBytes
 }
@@ -1022,8 +1024,18 @@ func (data *Data) Hash() tmbytes.HexBytes {
 	if data == nil {
 		return (Txs{}).Hash()
 	}
-	if data.hash == nil {
+
+	if data.hash != nil {
+		return data.hash
+	}
+
+	// TODO(berg): run this by teammates for ideas on verification when we have
+	//				both Txs and Certificates.
+	switch {
+	case data.Txs != nil:
 		data.hash = data.Txs.Hash() // NOTE: leaves of merkle tree are TxIDs
+	case data.Certificates != nil && len(data.Certificates.RootCert) != 0:
+		data.hash = data.Certificates.Hash()
 	}
 	return data.hash
 }
@@ -1060,6 +1072,22 @@ func (data *Data) ToProto() tmproto.Data {
 		tp.Txs = txBzs
 	}
 
+	certs := data.Certificates
+	if certs == nil {
+		return *tp
+	}
+
+	if len(certs.RootCert) != 0 {
+		//tp.RootCert = cert.RootCert
+		//if len(cert.ExtraCerts) > 0 {
+		//	extraBzs := make([][]byte, len(cert.ExtraCerts))
+		//	for i := range cert.ExtraCerts {
+		//		extraBzs[i] = cert.ExtraCerts[i]
+		//	}
+		//	tp.ExtraCerts = extraBzs
+		//}
+	}
+
 	return *tp
 }
 
@@ -1081,7 +1109,34 @@ func DataFromProto(dp *tmproto.Data) (Data, error) {
 		data.Txs = Txs{}
 	}
 
+	//data.Certificates.RootCert = dp.RootCert
+	//if extras := dp.ExtraCerts; len(extras) > 0 {
+	//	extraBzs := make([]tmbytes.HexBytes, len(dp.ExtraCerts))
+	//	for i := range extras {
+	//		extraBzs[i] = extras[i]
+	//	}
+	//	data.Certificates.ExtraCerts = extraBzs
+	//}
+
 	return *data, nil
+}
+
+type DAGCerts struct {
+	RootCert   tmbytes.HexBytes   `json:"root"`
+	ExtraCerts []tmbytes.HexBytes `json:"extras"`
+}
+
+func (d DAGCerts) Hash() []byte {
+	// These allocations will be removed once Txs is switched to [][]byte,
+	// ref #2603. This is because golang does not allow type casting slices without unsafe
+	b := make([][]byte, 1+len(d.ExtraCerts))
+	b[0] = d.RootCert
+	for i := 0; i < len(d.ExtraCerts); i++ {
+		b[i+1] = d.ExtraCerts[i]
+	}
+	// TODO(berg): do we need to fix this? Not sure we need to merkl hash
+	// 			   the cert digests
+	return merkle.HashFromByteSlices(b)
 }
 
 //--------------------------------------------------------------------------------
