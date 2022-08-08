@@ -239,7 +239,8 @@ type Node struct {
 	blockStore        *store.BlockStore // store the blockchain to disk
 	bcReactor         p2p.Reactor       // for fast-syncing
 	mempoolReactor    *mempl.Reactor    // for gossipping transactions
-	mempool           mempl.Mempool
+	mpABCI            *mempl.ABCI
+	mpWAL             *mempl.PoolCList
 	stateSync         bool                    // whether the node should state sync on startup
 	stateSyncReactor  *statesync.Reactor      // for hosting and restoring state sync snapshots
 	stateSyncProvider statesync.StateProvider // provides state data for bootstrapping a node
@@ -378,24 +379,35 @@ func onlyValidatorIsUs(state sm.State, pubKey crypto.PubKey) bool {
 }
 
 func createMempoolAndMempoolReactor(config *cfg.Config, proxyApp proxy.AppConns,
-	state sm.State, memplMetrics *mempl.Metrics, logger log.Logger) (*mempl.Reactor, *mempl.CListMempool) {
+	state sm.State, memplMetrics *mempl.Metrics, logger log.Logger) (
+	*mempl.ABCI,
+	*mempl.Reactor,
+	*mempl.PoolCList,
+) {
 
-	mempool := mempl.NewCListMempool(
+	mempoolLogger := logger.With("module", "mempool")
+	pool := mempl.NewPoolCList(
 		config.Mempool,
-		proxyApp.Mempool(),
 		state.LastBlockHeight,
 		mempl.WithMetrics(memplMetrics),
 		mempl.WithPreCheck(sm.TxPreCheck(state)),
 		mempl.WithPostCheck(sm.TxPostCheck(state)),
 	)
-	mempoolLogger := logger.With("module", "mempool")
-	mempoolReactor := mempl.NewReactor(config.Mempool, mempool)
-	mempoolReactor.SetLogger(mempoolLogger)
+	pool.SetLogger(mempoolLogger.With("component", "pool_clist"))
+
+	memABCI := mempl.NewABCI(
+		mempoolLogger.With("component", "abci"),
+		config.Mempool,
+		proxyApp.Mempool(),
+		pool,
+	)
+	mempoolReactor := mempl.NewReactor(config.Mempool, memABCI, pool)
+	mempoolReactor.SetLogger(mempoolLogger.With("component", "reactor"))
 
 	if config.Consensus.WaitForTxs() {
-		mempool.EnableTxsAvailable()
+		memABCI.EnableTxsAvailable()
 	}
-	return mempoolReactor, mempool
+	return memABCI, mempoolReactor, pool
 }
 
 func createEvidenceReactor(config *cfg.Config, dbProvider DBProvider,
@@ -441,7 +453,7 @@ func createConsensusReactor(config *cfg.Config,
 	state sm.State,
 	blockExec *sm.BlockExecutor,
 	blockStore sm.BlockStore,
-	mempool *mempl.CListMempool,
+	txNotifier cs.TxNotifier,
 	evidencePool *evidence.Pool,
 	privValidator types.PrivValidator,
 	csMetrics *consensus.Metrics,
@@ -455,7 +467,7 @@ func createConsensusReactor(config *cfg.Config,
 		state.Copy(),
 		blockExec,
 		blockStore,
-		mempool,
+		txNotifier,
 		evidencePool,
 		misbehaviors,
 		cs.StateMetrics(csMetrics),
@@ -768,7 +780,7 @@ func NewNode(config *cfg.Config,
 	csMetrics, p2pMetrics, memplMetrics, smMetrics := metricsProvider(genDoc.ChainID)
 
 	// Make MempoolReactor
-	mempoolReactor, mempool := createMempoolAndMempoolReactor(config, proxyApp, state, memplMetrics, logger)
+	mpABCI, mempoolReactor, poolClist := createMempoolAndMempoolReactor(config, proxyApp, state, memplMetrics, logger)
 
 	// Make Evidence Reactor
 	evidenceReactor, evidencePool, err := createEvidenceReactor(config, dbProvider, stateDB, blockStore, logger)
@@ -781,7 +793,7 @@ func NewNode(config *cfg.Config,
 		stateStore,
 		logger.With("module", "state"),
 		proxyApp.Consensus(),
-		mempool,
+		mpABCI,
 		evidencePool,
 		sm.BlockExecutorWithMetrics(smMetrics),
 	)
@@ -802,7 +814,7 @@ func NewNode(config *cfg.Config,
 
 	logger.Info("Setting up maverick consensus reactor", "Misbehaviors", misbehaviors)
 	consensusReactor, consensusState := createConsensusReactor(
-		config, state, blockExec, blockStore, mempool, evidencePool,
+		config, state, blockExec, blockStore, mpABCI, evidencePool,
 		privValidator, csMetrics, stateSync || fastSync, eventBus, consensusLogger, misbehaviors)
 
 	// Set up state sync reactor, and schedule a sync if requested.
@@ -886,7 +898,8 @@ func NewNode(config *cfg.Config,
 		blockStore:       blockStore,
 		bcReactor:        bcReactor,
 		mempoolReactor:   mempoolReactor,
-		mempool:          mempool,
+		mpABCI:           mpABCI,
+		mpWAL:            poolClist,
 		consensusState:   consensusState,
 		consensusReactor: consensusReactor,
 		stateSyncReactor: stateSyncReactor,
@@ -947,8 +960,8 @@ func (n *Node) OnStart() error {
 
 	n.isListening = true
 
-	if n.config.Mempool.WalEnabled() {
-		err = n.mempool.InitWAL()
+	if n.config.Mempool.WalEnabled() && n.mpWAL != nil {
+		err = n.mpWAL.InitWAL()
 		if err != nil {
 			return fmt.Errorf("init mempool WAL: %w", err)
 		}
@@ -1002,8 +1015,8 @@ func (n *Node) OnStop() {
 	}
 
 	// stop mempool WAL
-	if n.config.Mempool.WalEnabled() {
-		n.mempool.CloseWAL()
+	if n.config.Mempool.WalEnabled() && n.mpWAL != nil {
+		n.mpWAL.CloseWAL()
 	}
 
 	if err := n.transport.Close(); err != nil {
@@ -1057,7 +1070,7 @@ func (n *Node) ConfigureRPC() error {
 		BlockIndexer:     n.blockIndexer,
 		ConsensusReactor: &consensus.Reactor{},
 		EventBus:         n.eventBus,
-		Mempool:          n.mempool,
+		Mempool:          n.mpABCI,
 
 		Logger: n.Logger.With("module", "rpc"),
 
@@ -1228,9 +1241,9 @@ func (n *Node) MempoolReactor() *mempl.Reactor {
 	return n.mempoolReactor
 }
 
-// Mempool returns the Node's mempool.
-func (n *Node) Mempool() mempl.Mempool {
-	return n.mempool
+// MempoolABCI returns the Node's mempool.
+func (n *Node) MempoolABCI() *mempl.ABCI {
+	return n.mpABCI
 }
 
 // PEXReactor returns the Node's PEXReactor. It returns nil if PEX is disabled.

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"sync"
@@ -14,8 +15,6 @@ import (
 
 	"github.com/go-kit/log/term"
 	"github.com/stretchr/testify/require"
-
-	"path"
 
 	dbm "github.com/tendermint/tm-db"
 
@@ -392,12 +391,21 @@ func newStateWithConfigAndBlockStore(
 	mtx := new(tmsync.Mutex)
 	proxyAppConnMem := abcicli.NewLocalClient(mtx, app)
 	proxyAppConnCon := abcicli.NewLocalClient(mtx, app)
+	logger := log.TestingLogger()
 
 	// Make Mempool
-	mempool := mempl.NewCListMempool(thisConfig.Mempool, proxyAppConnMem, 0)
-	mempool.SetLogger(log.TestingLogger().With("module", "mempool"))
+	mpLogger := logger.With("module", "mempool")
+	poolCList := mempl.NewPoolCList(thisConfig.Mempool, 0)
+	poolCList.SetLogger(mpLogger)
+
+	mp := mempl.NewABCI(
+		mpLogger.With("component", "abci"),
+		thisConfig.Mempool,
+		proxyAppConnMem,
+		poolCList,
+	)
 	if thisConfig.Consensus.WaitForTxs() {
-		mempool.EnableTxsAvailable()
+		mp.EnableTxsAvailable()
 	}
 
 	evpool := sm.EmptyEvidencePool{}
@@ -409,13 +417,13 @@ func newStateWithConfigAndBlockStore(
 		panic(err)
 	}
 
-	blockExec := sm.NewBlockExecutor(stateStore, log.TestingLogger(), proxyAppConnCon, mempool, evpool)
-	cs := NewState(thisConfig.Consensus, state, blockExec, blockStore, mempool, evpool)
-	cs.SetLogger(log.TestingLogger().With("module", "consensus"))
+	blockExec := sm.NewBlockExecutor(stateStore, log.TestingLogger(), proxyAppConnCon, mp, evpool)
+	cs := NewState(thisConfig.Consensus, state, blockExec, blockStore, mp, evpool)
+	cs.SetLogger(logger.With("module", "consensus"))
 	cs.SetPrivValidator(pv)
 
 	eventBus := types.NewEventBus()
-	eventBus.SetLogger(log.TestingLogger().With("module", "events"))
+	eventBus.SetLogger(logger.With("module", "events"))
 	err := eventBus.Start()
 	if err != nil {
 		panic(err)

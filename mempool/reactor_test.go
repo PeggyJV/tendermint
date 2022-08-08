@@ -1,6 +1,7 @@
 package mempool
 
 import (
+	"context"
 	"encoding/hex"
 	"errors"
 	"net"
@@ -61,12 +62,13 @@ func TestReactorBroadcastTxsMessage(t *testing.T) {
 		}
 	}
 
-	txs := checkTxs(t, reactors[0].mempool, numTxs, UnknownPeerID)
+	txs := checkTxs(t, reactors[0].abci, numTxs, UnknownPeerID)
 	waitForTxsOnReactors(t, txs, reactors)
 }
 
 // regression test for https://github.com/tendermint/tendermint/issues/5408
 func TestReactorConcurrency(t *testing.T) {
+	ctx := context.TODO()
 	config := cfg.TestConfig()
 	const N = 2
 	reactors := makeAndConnectReactors(config, N)
@@ -91,35 +93,30 @@ func TestReactorConcurrency(t *testing.T) {
 
 		// 1. submit a bunch of txs
 		// 2. update the whole mempool
-		txs := checkTxs(t, reactors[0].mempool, numTxs, UnknownPeerID)
+		txs := checkTxs(t, reactors[0].abci, numTxs, UnknownPeerID)
 		go func() {
 			defer wg.Done()
-
-			reactors[0].mempool.Lock()
-			defer reactors[0].mempool.Unlock()
 
 			deliverTxResponses := make([]*abci.ResponseDeliverTx, len(txs))
 			for i := range txs {
 				deliverTxResponses[i] = &abci.ResponseDeliverTx{Code: 0}
 			}
-			err := reactors[0].mempool.Update(1, txs, deliverTxResponses, nil, nil)
-			assert.NoError(t, err)
+			mp := reactors[0].abci
+			updateMempool(ctx, t, mp, 1, txs, deliverTxResponses, nil, nil)
 		}()
 
 		// 1. submit a bunch of txs
 		// 2. update none
-		_ = checkTxs(t, reactors[1].mempool, numTxs, UnknownPeerID)
+		_ = checkTxs(t, reactors[1].abci, numTxs, UnknownPeerID)
 		go func() {
 			defer wg.Done()
 
-			reactors[1].mempool.Lock()
-			defer reactors[1].mempool.Unlock()
-			err := reactors[1].mempool.Update(1, []types.Tx{}, make([]*abci.ResponseDeliverTx, 0), nil, nil)
-			assert.NoError(t, err)
+			mp := reactors[1].abci
+			updateMempool(ctx, t, mp, 1, []types.Tx{}, make([]*abci.ResponseDeliverTx, 0), nil, nil)
 		}()
 
 		// 1. flush the mempool
-		reactors[1].mempool.Flush()
+		assert.NoError(t, reactors[1].abci.Flush(ctx))
 	}
 
 	wg.Wait()
@@ -145,11 +142,13 @@ func TestReactorNoBroadcastToSender(t *testing.T) {
 	}
 
 	const peerID = 1
-	checkTxs(t, reactors[0].mempool, numTxs, peerID)
+	checkTxs(t, reactors[0].abci, numTxs, peerID)
 	ensureNoTxs(t, reactors[peerID], 100*time.Millisecond)
 }
 
 func TestReactor_MaxTxBytes(t *testing.T) {
+	ctx := context.TODO()
+
 	config := cfg.TestConfig()
 
 	const N = 2
@@ -170,17 +169,17 @@ func TestReactor_MaxTxBytes(t *testing.T) {
 	// Broadcast a tx, which has the max size
 	// => ensure it's received by the second reactor.
 	tx1 := tmrand.Bytes(config.Mempool.MaxTxBytes)
-	err := reactors[0].mempool.CheckTx(tx1, nil, TxInfo{SenderID: UnknownPeerID})
+	err := reactors[0].abci.CheckTx(ctx, tx1, nil, TxInfo{SenderID: UnknownPeerID})
 	require.NoError(t, err)
 	waitForTxsOnReactors(t, []types.Tx{tx1}, reactors)
 
-	reactors[0].mempool.Flush()
-	reactors[1].mempool.Flush()
+	require.NoError(t, reactors[0].abci.Flush(ctx))
+	require.NoError(t, reactors[1].abci.Flush(ctx))
 
 	// Broadcast a tx, which is beyond the max size
 	// => ensure it's not sent
 	tx2 := tmrand.Bytes(config.Mempool.MaxTxBytes + 1)
-	err = reactors[0].mempool.CheckTx(tx2, nil, TxInfo{SenderID: UnknownPeerID})
+	err = reactors[0].abci.CheckTx(ctx, tx2, nil, TxInfo{SenderID: UnknownPeerID})
 	require.Error(t, err)
 }
 
@@ -303,10 +302,10 @@ func makeAndConnectReactors(config *cfg.Config, n int) []*Reactor {
 	for i := 0; i < n; i++ {
 		app := kvstore.NewApplication()
 		cc := proxy.NewLocalClientCreator(app)
-		mempool, cleanup := newMempoolWithApp(cc)
-		defer cleanup()
+		clist, mp, cleanup := newMempoolWithApp(cc)
+		defer cleanup() // TODO(berg): need to understand this a litle better, why are we collection a bunch of
 
-		reactors[i] = NewReactor(config.Mempool, mempool) // so we dont start the consensus states
+		reactors[i] = NewReactor(config.Mempool, mp, clist) // so we dont start the consensus states
 		reactors[i].SetLogger(logger.With("validator", i))
 	}
 
@@ -344,12 +343,19 @@ func waitForTxsOnReactors(t *testing.T, txs types.Txs, reactors []*Reactor) {
 }
 
 func waitForTxsOnReactor(t *testing.T, txs types.Txs, reactor *Reactor, reactorIndex int) {
-	mempool := reactor.mempool
-	for mempool.Size() < len(txs) {
+	ctx := context.TODO()
+
+	mp := reactor.abci
+	for mp.PoolMeta().Size < len(txs) {
 		time.Sleep(time.Millisecond * 100)
 	}
 
-	reapedTxs := mempool.ReapMaxTxs(len(txs))
+	reaper, err := mp.Reap(ctx, ReapTxs(len(txs)))
+	require.NoError(t, err)
+
+	reapedTxs, err := reaper.Txs(ctx)
+	require.NoError(t, err)
+
 	for i, tx := range txs {
 		assert.Equalf(t, tx, reapedTxs[i],
 			"txs at index %d on reactor %d don't match: %v vs %v", i, reactorIndex, tx, reapedTxs[i])
@@ -359,7 +365,7 @@ func waitForTxsOnReactor(t *testing.T, txs types.Txs, reactor *Reactor, reactorI
 // ensure no txs on reactor after some timeout
 func ensureNoTxs(t *testing.T, reactor *Reactor, timeout time.Duration) {
 	time.Sleep(timeout) // wait for the txs in all mempools
-	assert.Zero(t, reactor.mempool.Size())
+	assert.Zero(t, reactor.abci.PoolMeta().Size)
 }
 
 func TestMempoolVectors(t *testing.T) {

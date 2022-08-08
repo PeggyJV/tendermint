@@ -64,10 +64,18 @@ func TestByzantinePrevoteEquivocation(t *testing.T) {
 		proxyAppConnCon := abcicli.NewLocalClient(mtx, app)
 
 		// Make Mempool
-		mempool := mempl.NewCListMempool(thisConfig.Mempool, proxyAppConnMem, 0)
-		mempool.SetLogger(log.TestingLogger().With("module", "mempool"))
+		mpLogger := logger.With("module", "mempool")
+		poolClist := mempl.NewPoolCList(thisConfig.Mempool, 0)
+		poolClist.SetLogger(mpLogger.With("component", "pool"))
+
+		mp := mempl.NewABCI(
+			mpLogger,
+			thisConfig.Mempool,
+			proxyAppConnMem,
+			poolClist,
+		)
 		if thisConfig.Consensus.WaitForTxs() {
-			mempool.EnableTxsAvailable()
+			mp.EnableTxsAvailable()
 		}
 
 		// Make a full instance of the evidence pool
@@ -77,8 +85,8 @@ func TestByzantinePrevoteEquivocation(t *testing.T) {
 		evpool.SetLogger(logger.With("module", "evidence"))
 
 		// Make State
-		blockExec := sm.NewBlockExecutor(stateStore, log.TestingLogger(), proxyAppConnCon, mempool, evpool)
-		cs := NewState(thisConfig.Consensus, state, blockExec, blockStore, mempool, evpool)
+		blockExec := sm.NewBlockExecutor(stateStore, log.TestingLogger(), proxyAppConnCon, mp, evpool)
+		cs := NewState(thisConfig.Consensus, state, blockExec, blockStore, mp, evpool)
 		cs.SetLogger(cs.Logger)
 		// set private validator
 		pv := privVals[i]
@@ -190,9 +198,10 @@ func TestByzantinePrevoteEquivocation(t *testing.T) {
 		}
 		proposerAddr := lazyProposer.privValidatorPubKey.Address()
 
-		block, blockParts := lazyProposer.blockExec.CreateProposalBlock(
+		block, blockParts, err := lazyProposer.blockExec.CreateProposalBlock(
 			lazyProposer.Height, lazyProposer.state, commit, proposerAddr,
 		)
+		require.NoError(t, err)
 
 		// Flush the WAL. Otherwise, we may not recompute the same proposal to sign,
 		// and the privValidator will refuse to sign anything.
@@ -436,6 +445,8 @@ func TestByzantineConflictingProposalsWithPartition(t *testing.T) {
 // byzantine consensus functions
 
 func byzantineDecideProposalFunc(t *testing.T, height int64, round int32, cs *State, sw *p2p.Switch) {
+	ctx := context.TODO()
+
 	// byzantine user should create two proposals and try to split the vote.
 	// Avoid sending on internalMsgQueue and running consensus state.
 
@@ -451,7 +462,7 @@ func byzantineDecideProposalFunc(t *testing.T, height int64, round int32, cs *St
 	proposal1.Signature = p1.Signature
 
 	// some new transactions come in (this ensures that the proposals are different)
-	deliverTxsRange(cs, 0, 1)
+	deliverTxsRange(ctx, cs, 0, 1)
 
 	// Create a new proposal block from state/txs from the mempool.
 	block2, blockParts2 := cs.createProposalBlock()

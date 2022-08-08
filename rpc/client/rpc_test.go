@@ -334,7 +334,7 @@ func TestBroadcastTxSync(t *testing.T) {
 
 	// TODO (melekes): use mempool which is set on RPC rather than getting it from node
 	mempool := node.Mempool()
-	initMempoolSize := mempool.Size()
+	initMempoolSize := mempool.PoolMeta().Size
 
 	for i, c := range GetClients() {
 		_, _, tx := MakeTxKV()
@@ -342,11 +342,15 @@ func TestBroadcastTxSync(t *testing.T) {
 		require.Nil(err, "%d: %+v", i, err)
 		require.Equal(bres.Code, abci.CodeTypeOK) // FIXME
 
-		require.Equal(initMempoolSize+1, mempool.Size())
+		require.Equal(initMempoolSize+1, mempool.PoolMeta().Size)
 
-		txs := mempool.ReapMaxTxs(len(tx))
+		reaper, err := mempool.Reap(ctx, mempl.ReapTxs(len(tx)))
+		require.NoError(err)
+
+		txs, err := reaper.Txs(ctx)
+		require.NoError(err)
 		require.EqualValues(tx, txs[0])
-		mempool.Flush()
+		require.NoError(mempool.Flush(ctx))
 	}
 }
 
@@ -361,7 +365,7 @@ func TestBroadcastTxCommit(t *testing.T) {
 		require.True(bres.CheckTx.IsOK())
 		require.True(bres.DeliverTx.IsOK())
 
-		require.Equal(0, mempool.Size())
+		require.Zero(mempool.PoolMeta().Size)
 	}
 }
 
@@ -370,7 +374,7 @@ func TestUnconfirmedTxs(t *testing.T) {
 
 	ch := make(chan *abci.Response, 1)
 	mempool := node.Mempool()
-	err := mempool.CheckTx(tx, func(resp *abci.Response) { ch <- resp }, mempl.TxInfo{})
+	err := mempool.CheckTx(ctx, tx, func(resp *abci.Response) { ch <- resp }, mempl.TxInfo{})
 	require.NoError(t, err)
 
 	// wait for tx to arrive in mempoool.
@@ -383,16 +387,16 @@ func TestUnconfirmedTxs(t *testing.T) {
 	for _, c := range GetClients() {
 		mc := c.(client.MempoolClient)
 		limit := 1
-		res, err := mc.UnconfirmedTxs(context.Background(), &limit)
+		res, err := mc.UnconfirmedTxs(ctx, &limit)
 		require.NoError(t, err)
 
 		assert.Equal(t, 1, res.Count)
 		assert.Equal(t, 1, res.Total)
-		assert.Equal(t, mempool.TxsBytes(), res.TotalBytes)
+		assert.Equal(t, mempool.PoolMeta().TotalBytes, res.TotalBytes)
 		assert.Exactly(t, types.Txs{tx}, types.Txs(res.Txs))
 	}
 
-	mempool.Flush()
+	require.NoError(t, mempool.Flush(ctx))
 }
 
 func TestNumUnconfirmedTxs(t *testing.T) {
@@ -400,7 +404,7 @@ func TestNumUnconfirmedTxs(t *testing.T) {
 
 	ch := make(chan *abci.Response, 1)
 	mempool := node.Mempool()
-	err := mempool.CheckTx(tx, func(resp *abci.Response) { ch <- resp }, mempl.TxInfo{})
+	err := mempool.CheckTx(ctx, tx, func(resp *abci.Response) { ch <- resp }, mempl.TxInfo{})
 	require.NoError(t, err)
 
 	// wait for tx to arrive in mempoool.
@@ -410,7 +414,7 @@ func TestNumUnconfirmedTxs(t *testing.T) {
 		t.Error("Timed out waiting for CheckTx callback")
 	}
 
-	mempoolSize := mempool.Size()
+	mempoolSize := mempool.PoolMeta().Size
 	for i, c := range GetClients() {
 		mc, ok := c.(client.MempoolClient)
 		require.True(t, ok, "%d", i)
@@ -419,10 +423,10 @@ func TestNumUnconfirmedTxs(t *testing.T) {
 
 		assert.Equal(t, mempoolSize, res.Count)
 		assert.Equal(t, mempoolSize, res.Total)
-		assert.Equal(t, mempool.TxsBytes(), res.TotalBytes)
+		assert.Equal(t, mempool.PoolMeta().TotalBytes, res.TotalBytes)
 	}
 
-	mempool.Flush()
+	require.NoError(t, mempool.Flush(ctx))
 }
 
 func TestCheckTx(t *testing.T) {
@@ -435,7 +439,7 @@ func TestCheckTx(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, abci.CodeTypeOK, res.Code)
 
-		assert.Equal(t, 0, mempool.Size(), "mempool must be empty")
+		assert.Zero(t, mempool.PoolMeta().Size, "mempool must be empty")
 	}
 }
 

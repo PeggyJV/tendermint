@@ -109,7 +109,7 @@ func (blockExec *BlockExecutor) CreateProposalBlock(
 	height int64,
 	state State, commit *types.Commit,
 	proposerAddr []byte,
-) (*types.Block, *types.PartSet) {
+) (*types.Block, *types.PartSet, error) {
 	ctx := context.TODO()
 	maxBytes := state.ConsensusParams.Block.MaxBytes
 	maxGas := state.ConsensusParams.Block.MaxGas
@@ -129,11 +129,11 @@ func (blockExec *BlockExecutor) CreateProposalBlock(
 		mempl.ReapVerify(),
 	)
 	if err != nil {
-		// TODO(berg): rewire the CreateProposalBlock to return an error
-		return nil, nil
+		return nil, nil, err
 	}
 
-	return state.MakeBlockV2(height, reaper.BlockData(), commit, evidence, proposerAddr)
+	bl, ps := state.MakeBlockV2(height, reaper.BlockData(), commit, evidence, proposerAddr)
+	return bl, ps, nil
 }
 
 // ValidateBlock validates the given block against the given state.
@@ -141,17 +141,11 @@ func (blockExec *BlockExecutor) CreateProposalBlock(
 // Validation does not mutate state, but does require historical information from the stateDB,
 // ie. to verify evidence from a validator at an old height.
 func (blockExec *BlockExecutor) ValidateBlock(state State, block *types.Block) error {
-	ctx := context.TODO()
-	hydratedBlock, err := blockExec.mempool.NewHydratedBlock(ctx, block)
+	err := validateBlock(state, block)
 	if err != nil {
 		return err
 	}
-
-	err = validateBlock(state, hydratedBlock)
-	if err != nil {
-		return err
-	}
-	return blockExec.evpool.CheckEvidence(hydratedBlock.Evidence.Evidence)
+	return blockExec.evpool.CheckEvidence(block.Evidence.Evidence)
 }
 
 // ApplyBlock validates the block against the state, executes it against the app,
@@ -163,14 +157,14 @@ func (blockExec *BlockExecutor) ValidateBlock(state State, block *types.Block) e
 func (blockExec *BlockExecutor) ApplyBlock(
 	state State, blockID types.BlockID, block *types.Block,
 ) (State, int64, error) {
+	if err := validateBlock(state, block); err != nil {
+		return state, 0, ErrInvalidBlock(err)
+	}
+
 	ctx := context.TODO()
 	hydratedBlock, err := blockExec.mempool.NewHydratedBlock(ctx, block)
 	if err != nil {
 		return state, 0, err
-	}
-
-	if err := validateBlock(state, hydratedBlock); err != nil {
-		return state, 0, ErrInvalidBlock(err)
 	}
 
 	startTime := time.Now().UnixNano()
@@ -270,7 +264,6 @@ func (blockExec *BlockExecutor) Commit(
 		"committed state",
 		"height", block.Height,
 		"num_txs", len(block.Txs),
-		"num_certs", block.Certificates.TotalCerts(),
 		"app_hash", fmt.Sprintf("%X", res.Data),
 	)
 

@@ -20,7 +20,7 @@ import (
 // CheckTx nor DeliverTx results.
 // More: https://docs.tendermint.com/master/rpc/#/Tx/broadcast_tx_async
 func BroadcastTxAsync(ctx *rpctypes.Context, tx types.Tx) (*ctypes.ResultBroadcastTx, error) {
-	err := env.Mempool.CheckTx(tx, nil, mempl.TxInfo{})
+	err := env.Mempool.CheckTx(ctx.Context(), tx, nil, mempl.TxInfo{})
 
 	if err != nil {
 		return nil, err
@@ -33,7 +33,7 @@ func BroadcastTxAsync(ctx *rpctypes.Context, tx types.Tx) (*ctypes.ResultBroadca
 // More: https://docs.tendermint.com/master/rpc/#/Tx/broadcast_tx_sync
 func BroadcastTxSync(ctx *rpctypes.Context, tx types.Tx) (*ctypes.ResultBroadcastTx, error) {
 	resCh := make(chan *abci.Response, 1)
-	err := env.Mempool.CheckTx(tx, func(res *abci.Response) {
+	err := env.Mempool.CheckTx(ctx.Context(), tx, func(res *abci.Response) {
 		resCh <- res
 	}, mempl.TxInfo{})
 	if err != nil {
@@ -79,7 +79,7 @@ func BroadcastTxCommit(ctx *rpctypes.Context, tx types.Tx) (*ctypes.ResultBroadc
 
 	// Broadcast tx and wait for CheckTx result
 	checkTxResCh := make(chan *abci.Response, 1)
-	err = env.Mempool.CheckTx(tx, func(res *abci.Response) {
+	err = env.Mempool.CheckTx(ctx.Context(), tx, func(res *abci.Response) {
 		checkTxResCh <- res
 	}, mempl.TxInfo{})
 	if err != nil {
@@ -138,21 +138,33 @@ func UnconfirmedTxs(ctx *rpctypes.Context, limitPtr *int) (*ctypes.ResultUnconfi
 	// reuse per_page validator
 	limit := validatePerPage(limitPtr)
 
-	txs := env.Mempool.ReapMaxTxs(limit)
+	reaper, err := env.Mempool.Reap(ctx.Context(), mempl.ReapTxs(limit))
+	if err != nil {
+		return nil, err
+	}
+
+	txs, err := reaper.Txs(ctx.Context())
+	if err != nil {
+		return nil, err
+	}
+	meta := env.Mempool.PoolMeta()
 	return &ctypes.ResultUnconfirmedTxs{
 		Count:      len(txs),
-		Total:      env.Mempool.Size(),
-		TotalBytes: env.Mempool.TxsBytes(),
-		Txs:        txs}, nil
+		Total:      meta.Size,
+		TotalBytes: meta.TotalBytes,
+		Txs:        txs,
+	}, nil
 }
 
 // NumUnconfirmedTxs gets number of unconfirmed transactions.
 // More: https://docs.tendermint.com/master/rpc/#/Info/num_unconfirmed_txs
 func NumUnconfirmedTxs(ctx *rpctypes.Context) (*ctypes.ResultUnconfirmedTxs, error) {
+	meta := env.Mempool.PoolMeta()
 	return &ctypes.ResultUnconfirmedTxs{
-		Count:      env.Mempool.Size(),
-		Total:      env.Mempool.Size(),
-		TotalBytes: env.Mempool.TxsBytes()}, nil
+		Count:      meta.Size,
+		Total:      meta.Size,
+		TotalBytes: meta.TotalBytes,
+	}, nil
 }
 
 // CheckTx checks the transaction without executing it. The transaction won't

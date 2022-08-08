@@ -1,11 +1,13 @@
 package consensus
 
 import (
+	"context"
+
 	abci "github.com/tendermint/tendermint/abci/types"
-	"github.com/tendermint/tendermint/libs/clist"
 	mempl "github.com/tendermint/tendermint/mempool"
 	tmstate "github.com/tendermint/tendermint/proto/tendermint/state"
 	"github.com/tendermint/tendermint/proxy"
+	sm "github.com/tendermint/tendermint/state"
 	"github.com/tendermint/tendermint/types"
 )
 
@@ -13,36 +15,39 @@ import (
 
 type emptyMempool struct{}
 
-var _ mempl.Mempool = emptyMempool{}
+var (
+	_ sm.Mempool = emptyMempool{}
+	_ TxNotifier = emptyMempool{}
+)
 
-func (emptyMempool) Lock()     {}
-func (emptyMempool) Unlock()   {}
-func (emptyMempool) Size() int { return 0 }
-func (emptyMempool) CheckTx(_ types.Tx, _ func(*abci.Response), _ mempl.TxInfo) error {
+func (e emptyMempool) AfterBlockFinality(ctx context.Context, block *types.Block, txResults []*abci.ResponseDeliverTx, newPreFn mempl.PreCheckFunc, newPostFn mempl.PostCheckFunc) error {
 	return nil
 }
-func (emptyMempool) ReapMaxBytesMaxGas(_, _ int64) types.Txs { return types.Txs{} }
-func (emptyMempool) ReapMaxTxs(n int) types.Txs              { return types.Txs{} }
-func (emptyMempool) Update(
-	_ int64,
-	_ types.Txs,
-	_ []*abci.ResponseDeliverTx,
-	_ mempl.PreCheckFunc,
-	_ mempl.PostCheckFunc,
-) error {
+
+func (e emptyMempool) NewHydratedBlock(ctx context.Context, block *types.Block) (*types.Block, error) {
+	b := types.Block{
+		Header:   block.Header,
+		Data:     block.Data,
+		Evidence: block.Evidence,
+	}
+	if block.LastCommit != nil {
+		lc := *block.LastCommit
+		b.LastCommit = &lc
+	}
+	return &b, nil
+}
+
+func (e emptyMempool) PrepBlockFinality(_ context.Context) (func(), error) {
+	return func() {}, nil
+}
+
+func (e emptyMempool) Reap(ctx context.Context, opts ...mempl.ReapOptFn) (types.TxReaper, error) {
+	return types.Txs{}, nil
+}
+
+func (e emptyMempool) TxsAvailable() <-chan struct{} {
 	return nil
 }
-func (emptyMempool) Flush()                        {}
-func (emptyMempool) FlushAppConn() error           { return nil }
-func (emptyMempool) TxsAvailable() <-chan struct{} { return make(chan struct{}) }
-func (emptyMempool) EnableTxsAvailable()           {}
-func (emptyMempool) TxsBytes() int64               { return 0 }
-
-func (emptyMempool) TxsFront() *clist.CElement    { return nil }
-func (emptyMempool) TxsWaitChan() <-chan struct{} { return nil }
-
-func (emptyMempool) InitWAL() error { return nil }
-func (emptyMempool) CloseWAL()      {}
 
 //-----------------------------------------------------------------------------
 // mockProxyApp uses ABCIResponses to give the right results.

@@ -158,10 +158,18 @@ func TestReactorWithEvidence(t *testing.T) {
 		proxyAppConnCon := abcicli.NewLocalClient(mtx, app)
 
 		// Make Mempool
-		mempool := mempl.NewCListMempool(thisConfig.Mempool, proxyAppConnMem, 0)
-		mempool.SetLogger(log.TestingLogger().With("module", "mempool"))
+		mpLogger := log.TestingLogger().With("module", "mempool")
+		poolClist := mempl.NewPoolCList(thisConfig.Mempool, 0)
+		poolClist.SetLogger(mpLogger)
+
+		mp := mempl.NewABCI(
+			mpLogger.With("component", "abci"),
+			thisConfig.Mempool,
+			proxyAppConnMem,
+			poolClist,
+		)
 		if thisConfig.Consensus.WaitForTxs() {
-			mempool.EnableTxsAvailable()
+			mp.EnableTxsAvailable()
 		}
 
 		// mock the evidence pool
@@ -177,8 +185,8 @@ func TestReactorWithEvidence(t *testing.T) {
 		evpool2 := sm.EmptyEvidencePool{}
 
 		// Make State
-		blockExec := sm.NewBlockExecutor(stateStore, log.TestingLogger(), proxyAppConnCon, mempool, evpool)
-		cs := NewState(thisConfig.Consensus, state, blockExec, blockStore, mempool, evpool2)
+		blockExec := sm.NewBlockExecutor(stateStore, log.TestingLogger(), proxyAppConnCon, mp, evpool)
+		cs := NewState(thisConfig.Consensus, state, blockExec, blockStore, mp, evpool2)
 		cs.SetLogger(log.TestingLogger().With("module", "consensus"))
 		cs.SetPrivValidator(pv)
 
@@ -211,6 +219,8 @@ func TestReactorWithEvidence(t *testing.T) {
 
 // Ensure a testnet makes blocks when there are txs
 func TestReactorCreatesBlockWhenEmptyBlocksFalse(t *testing.T) {
+	ctx := context.TODO()
+
 	N := 4
 	css, cleanup := randConsensusNet(N, "consensus_reactor_test", newMockTickerFunc(true), newCounter,
 		func(c *cfg.Config) {
@@ -221,7 +231,9 @@ func TestReactorCreatesBlockWhenEmptyBlocksFalse(t *testing.T) {
 	defer stopConsensusNet(log.TestingLogger(), reactors, eventBuses)
 
 	// send a tx
-	if err := assertMempool(css[3].txNotifier).CheckTx([]byte{1, 2, 3}, nil, mempl.TxInfo{}); err != nil {
+	err := assertMempool(css[3].txNotifier).
+		CheckTx(ctx, []byte{1, 2, 3}, nil, mempl.TxInfo{})
+	if err != nil {
 		t.Error(err)
 	}
 
@@ -524,6 +536,7 @@ func waitForAndValidateBlock(
 	css []*State,
 	txs ...[]byte,
 ) {
+	ctx := context.TODO()
 	timeoutWaitGroup(t, n, func(j int) {
 		css[j].Logger.Debug("waitForAndValidateBlock")
 		msg := <-blocksSubs[j].Out()
@@ -532,7 +545,8 @@ func waitForAndValidateBlock(
 		err := validateBlock(newBlock, activeVals)
 		assert.Nil(t, err)
 		for _, tx := range txs {
-			err := assertMempool(css[j].txNotifier).CheckTx(tx, nil, mempl.TxInfo{})
+			err := assertMempool(css[j].txNotifier).
+				CheckTx(ctx, tx, nil, mempl.TxInfo{})
 			assert.Nil(t, err)
 		}
 	}, css)
