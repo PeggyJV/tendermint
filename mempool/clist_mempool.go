@@ -719,7 +719,7 @@ func (cache *mapTxCache) Push(tx types.Tx) bool {
 	if cache.list.Len() >= cache.size {
 		popped := cache.list.Front()
 		if popped != nil {
-			poppedTxHash := popped.Value.([TxKeySize]byte)
+			poppedTxHash := popped.Value.(types.TxKey)
 			delete(cache.cacheMap, poppedTxHash)
 			cache.list.Remove(popped)
 		}
@@ -753,7 +753,7 @@ func (nopTxCache) Remove(types.Tx)    {}
 //--------------------------------------------------------------------------------
 
 // TxKey is the fixed length array hash used as the key in maps.
-func TxKey(tx types.Tx) [TxKeySize]byte {
+func TxKey(tx types.Tx) types.TxKey {
 	return sha256.Sum256(tx)
 }
 

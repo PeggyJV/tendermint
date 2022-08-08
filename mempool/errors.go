@@ -12,28 +12,28 @@ var (
 
 // ErrTxTooLarge means the tx is too big to be sent in a message to other peers
 type ErrTxTooLarge struct {
-	max    int
-	actual int
+	Max    int
+	Actual int
 }
 
 func (e ErrTxTooLarge) Error() string {
-	return fmt.Sprintf("Tx too large. Max size is %d, but got %d", e.max, e.actual)
+	return fmt.Sprintf("Tx too large. Max size is %d, but got %d", e.Max, e.Actual)
 }
 
 // ErrMempoolIsFull means Tendermint & an application can't handle that much load
 type ErrMempoolIsFull struct {
-	numTxs int
-	maxTxs int
+	NumTxs int
+	MaxTxs int
 
-	txsBytes    int64
-	maxTxsBytes int64
+	TxsBytes    int64
+	MaxTxsBytes int64
 }
 
 func (e ErrMempoolIsFull) Error() string {
 	return fmt.Sprintf(
-		"mempool is full: number of txs %d (max: %d), total txs bytes %d (max: %d)",
-		e.numTxs, e.maxTxs,
-		e.txsBytes, e.maxTxsBytes)
+		"mempool is full: number of txs %d (Max: %d), total txs bytes %d (Max: %d)",
+		e.NumTxs, e.MaxTxs,
+		e.TxsBytes, e.MaxTxsBytes)
 }
 
 // ErrPreCheck is returned when tx is too big
