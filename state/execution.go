@@ -1,6 +1,7 @@
 package state
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"time"
@@ -16,7 +17,20 @@ import (
 	"github.com/tendermint/tendermint/types"
 )
 
-//-----------------------------------------------------------------------------
+type Mempool interface {
+	AfterBlockFinality(
+		ctx context.Context,
+		block *types.Block,
+		txResults []*abci.ResponseDeliverTx,
+		newPreFn mempl.PreCheckFunc,
+		newPostFn mempl.PostCheckFunc,
+	) error
+	NewHydratedBlock(ctx context.Context, block *types.Block) (*types.Block, error)
+	PrepBlockFinality(_ context.Context) (func(), error)
+	Reap(ctx context.Context, opts ...mempl.ReapOptFn) (types.TxReaper, error)
+}
+
+// -----------------------------------------------------------------------------
 // BlockExecutor handles block execution and state updates.
 // It exposes ApplyBlock(), which validates & executes the block, updates state w/ ABCI responses,
 // then commits and updates the mempool atomically, then saves state.
@@ -34,7 +48,7 @@ type BlockExecutor struct {
 
 	// manage the mempool lock during commit
 	// and update both with block results after commit.
-	mempool mempl.Mempool
+	mempool Mempool
 	evpool  EvidencePool
 
 	logger log.Logger
@@ -56,7 +70,7 @@ func NewBlockExecutor(
 	stateStore Store,
 	logger log.Logger,
 	proxyApp proxy.AppConnConsensus,
-	mempool mempl.Mempool,
+	mempool Mempool,
 	evpool EvidencePool,
 	options ...BlockExecutorOption,
 ) *BlockExecutor {
@@ -96,7 +110,7 @@ func (blockExec *BlockExecutor) CreateProposalBlock(
 	state State, commit *types.Commit,
 	proposerAddr []byte,
 ) (*types.Block, *types.PartSet) {
-
+	ctx := context.TODO()
 	maxBytes := state.ConsensusParams.Block.MaxBytes
 	maxGas := state.ConsensusParams.Block.MaxGas
 
@@ -105,9 +119,21 @@ func (blockExec *BlockExecutor) CreateProposalBlock(
 	// Fetch a limited amount of valid txs
 	maxDataBytes := types.MaxDataBytes(maxBytes, evSize, state.Validators.Size())
 
-	txs := blockExec.mempool.ReapMaxBytesMaxGas(maxDataBytes, maxGas)
+	reaper, err := blockExec.mempool.Reap(ctx,
+		mempl.ReapBytes(maxDataBytes),
+		mempl.ReapGas(maxGas),
+		// TODO(berg): we can do the verification as an option to the Reap. This is actually pretty
+		//			   handy and allows us to reuse the func without having to cloudy up :allthethings:.
+		//			   This opens up the path for narwhal to put TXs as a rough estimate in its mempool
+		//			   and gossip it about, and we maintain the ability to verify it on the reap.
+		mempl.ReapVerify(),
+	)
+	if err != nil {
+		// TODO(berg): rewire the CreateProposalBlock to return an error
+		return nil, nil
+	}
 
-	return state.MakeBlock(height, txs, commit, evidence, proposerAddr)
+	return state.MakeBlockV2(height, reaper.BlockData(), commit, evidence, proposerAddr)
 }
 
 // ValidateBlock validates the given block against the given state.
@@ -115,11 +141,17 @@ func (blockExec *BlockExecutor) CreateProposalBlock(
 // Validation does not mutate state, but does require historical information from the stateDB,
 // ie. to verify evidence from a validator at an old height.
 func (blockExec *BlockExecutor) ValidateBlock(state State, block *types.Block) error {
-	err := validateBlock(state, block)
+	ctx := context.TODO()
+	hydratedBlock, err := blockExec.mempool.NewHydratedBlock(ctx, block)
 	if err != nil {
 		return err
 	}
-	return blockExec.evpool.CheckEvidence(block.Evidence.Evidence)
+
+	err = validateBlock(state, hydratedBlock)
+	if err != nil {
+		return err
+	}
+	return blockExec.evpool.CheckEvidence(hydratedBlock.Evidence.Evidence)
 }
 
 // ApplyBlock validates the block against the state, executes it against the app,
@@ -131,14 +163,19 @@ func (blockExec *BlockExecutor) ValidateBlock(state State, block *types.Block) e
 func (blockExec *BlockExecutor) ApplyBlock(
 	state State, blockID types.BlockID, block *types.Block,
 ) (State, int64, error) {
+	ctx := context.TODO()
+	hydratedBlock, err := blockExec.mempool.NewHydratedBlock(ctx, block)
+	if err != nil {
+		return state, 0, err
+	}
 
-	if err := validateBlock(state, block); err != nil {
+	if err := validateBlock(state, hydratedBlock); err != nil {
 		return state, 0, ErrInvalidBlock(err)
 	}
 
 	startTime := time.Now().UnixNano()
 	abciResponses, err := execBlockOnProxyApp(
-		blockExec.logger, blockExec.proxyApp, block, blockExec.store, state.InitialHeight,
+		blockExec.logger, blockExec.proxyApp, hydratedBlock, blockExec.store, state.InitialHeight,
 	)
 	endTime := time.Now().UnixNano()
 	blockExec.metrics.BlockProcessingTime.Observe(float64(endTime-startTime) / 1000000)
@@ -149,7 +186,7 @@ func (blockExec *BlockExecutor) ApplyBlock(
 	fail.Fail() // XXX
 
 	// Save the results before we commit.
-	if err := blockExec.store.SaveABCIResponses(block.Height, abciResponses); err != nil {
+	if err := blockExec.store.SaveABCIResponses(hydratedBlock.Height, abciResponses); err != nil {
 		return state, 0, err
 	}
 
@@ -171,19 +208,19 @@ func (blockExec *BlockExecutor) ApplyBlock(
 	}
 
 	// Update the state with the block and responses.
-	state, err = updateState(state, blockID, &block.Header, abciResponses, validatorUpdates)
+	state, err = updateState(state, blockID, &hydratedBlock.Header, abciResponses, validatorUpdates)
 	if err != nil {
 		return state, 0, fmt.Errorf("commit failed for application: %v", err)
 	}
 
 	// Lock mempool, commit app state, update mempoool.
-	appHash, retainHeight, err := blockExec.Commit(state, block, abciResponses.DeliverTxs)
+	appHash, retainHeight, err := blockExec.Commit(state, hydratedBlock, abciResponses.DeliverTxs)
 	if err != nil {
 		return state, 0, fmt.Errorf("commit failed for application: %v", err)
 	}
 
 	// Update evpool with the latest state.
-	blockExec.evpool.Update(state, block.Evidence.Evidence)
+	blockExec.evpool.Update(state, hydratedBlock.Evidence.Evidence)
 
 	fail.Fail() // XXX
 
@@ -197,7 +234,7 @@ func (blockExec *BlockExecutor) ApplyBlock(
 
 	// Events are fired after everything else.
 	// NOTE: if we crash between Commit and Save, events wont be fired during replay
-	fireEvents(blockExec.logger, blockExec.eventBus, block, abciResponses, validatorUpdates)
+	fireEvents(blockExec.logger, blockExec.eventBus, hydratedBlock, abciResponses, validatorUpdates)
 
 	return state, retainHeight, nil
 }
@@ -213,16 +250,13 @@ func (blockExec *BlockExecutor) Commit(
 	block *types.Block,
 	deliverTxResponses []*abci.ResponseDeliverTx,
 ) ([]byte, int64, error) {
-	blockExec.mempool.Lock()
-	defer blockExec.mempool.Unlock()
-
-	// while mempool is Locked, flush to ensure all async requests have completed
-	// in the ABCI app before Commit.
-	err := blockExec.mempool.FlushAppConn()
+	ctx := context.TODO()
+	finishFn, err := blockExec.mempool.PrepBlockFinality(ctx)
 	if err != nil {
 		blockExec.logger.Error("client error during mempool.FlushAppConn", "err", err)
 		return nil, 0, err
 	}
+	defer finishFn()
 
 	// Commit block, get hash back
 	res, err := blockExec.proxyApp.CommitSync()
@@ -236,13 +270,14 @@ func (blockExec *BlockExecutor) Commit(
 		"committed state",
 		"height", block.Height,
 		"num_txs", len(block.Txs),
+		"num_certs", block.Certificates.TotalCerts(),
 		"app_hash", fmt.Sprintf("%X", res.Data),
 	)
 
 	// Update mempool.
-	err = blockExec.mempool.Update(
-		block.Height,
-		block.Txs,
+	err = blockExec.mempool.AfterBlockFinality(
+		ctx,
+		block,
 		deliverTxResponses,
 		TxPreCheck(state),
 		TxPostCheck(state),
