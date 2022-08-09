@@ -137,7 +137,10 @@ type blockPrep struct {
 func (b *blockPrep) nextBlockCollections(ctx context.Context) ([]*narwhal.CertificateDigest, error) {
 	roundsResp, err := b.pc.Rounds(ctx, &narwhal.RoundsRequest{PublicKey: &b.publicKey})
 	if err != nil {
-		return nil, fmt.Errorf("failed to make rounds request for pk(%s): %w", b.publicKey.Bytes, err)
+		if isNoCertsInDAGErr(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to make rounds request for pk(%s): %w", base64Encode(b.publicKey.Bytes), err)
 	}
 
 	oldest, mostRecent := roundsResp.OldestRound, roundsResp.NewestRound
@@ -304,6 +307,11 @@ func takeTxsFromCollectionsResult(resp *narwhal.GetCollectionsResponse) ([]*narw
 		}
 	}
 	return txs, multierror.Append(nil, errs...).ErrorOrNil()
+}
+
+func isNoCertsInDAGErr(err error) bool {
+	return err != nil &&
+		strings.Contains(err.Error(), "No remaining certificates in Dag for this authority")
 }
 
 func base64Encode(src []byte) string {

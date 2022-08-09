@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"fmt"
 	"os"
 	"sort"
 	"strconv"
@@ -33,21 +34,27 @@ values in parens as follows:
 Be mindful of overwriting the primaries, they should be able to reach consensus.
 4 or 7 are good numbers for local testing. Scale the workers as you see fit.
 */
+
 func TestNarwhalNetwork(t *testing.T) {
-	shouldCleanupRaw := os.Getenv("NARWHAL_WIPE")
-	shouldCleanup := shouldCleanupRaw == "true" || shouldCleanupRaw == "1" || shouldCleanupRaw == "yes"
+	shouldCleanup := hasMatch(os.Getenv("NARWHAL_WIPE"), "true", "t", "1", "yes", "y")
 	if shouldCleanup {
 		t.Log("test will cleanup directory artifacts upon completion")
 	}
+
+	primaries := envOrIntDefault("NARWHAL_PRIMARIES", 4)
+	workers := envOrIntDefault("NARWHAL_WORKERS", 1)
+	maxTXs := envOrIntDefault("NARWHAL_MAX_TXS", 5000)
+	maxProposals := envOrIntDefault("NARWHAL_MAX_PROPOSALS", 5)
+	waitDirSecs := envOrIntDefault("NARWHAL_WAIT_DIR_SECONDS", 5)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	l := narwhalmint.LauncherNarwhal{
-		BlockSizeLimitBytes: 50 * kilobyte, // 10kbs
+		BlockSizeLimitBytes: 150 * kilobyte, // 10kbs
 		Host:                "127.0.0.1",
-		Primaries:           envOrIntDefault("NARWHAL_PRIMARIES", 4),
-		Workers:             envOrIntDefault("NARWHAL_WORKERS", 1),
+		Primaries:           primaries,
+		Workers:             workers,
 		Out:                 os.Stdout,
 	}
 	defer l.Close()
@@ -64,7 +71,7 @@ func TestNarwhalNetwork(t *testing.T) {
 
 	require.NoError(t, l.Start(ctx))
 
-	waitDir := 5 * time.Second
+	waitDir := time.Duration(waitDirSecs) * time.Second
 	t.Logf("waiting %s for narwhal cluster to be ready", waitDir)
 	time.Sleep(waitDir)
 
@@ -79,7 +86,6 @@ func TestNarwhalNetwork(t *testing.T) {
 		}
 	}()
 
-	maxTXs := 5000
 	t.Logf("submitting %d txs", maxTXs)
 	for i := 0; i < maxTXs; i++ {
 		txPayload := []byte("payload-" + strconv.Itoa(i))
@@ -96,17 +102,11 @@ func TestNarwhalNetwork(t *testing.T) {
 	time.Sleep(waitDir)
 	t.Log("setup complete\n")
 
-	timedCTX, cancel := context.WithTimeout(ctx, waitDir)
-	proposeBlockRun(t, timedCTX, &l, 0)
-	cancel()
-
-	timedCTX, cancel = context.WithTimeout(ctx, waitDir)
-	proposeBlockRun(t, timedCTX, &l, 1)
-	cancel()
-
-	timedCTX, cancel = context.WithTimeout(ctx, waitDir)
-	proposeBlockRun(t, timedCTX, &l, 2)
-	cancel()
+	for i := 0; i < maxProposals; i++ {
+		timedCTX, cancel := context.WithTimeout(ctx, waitDir)
+		proposeBlockRun(t, timedCTX, &l, i)
+		cancel()
+	}
 
 	t.Log("terminating narwhal_nodes...")
 	cancel()
@@ -122,7 +122,7 @@ func proposeBlockRun(t *testing.T, ctx context.Context, l *narwhalmint.LauncherN
 	nextBlockCollections, err := proposer.NextBlockCollections(ctx)
 	require.NoError(t, err)
 	if len(nextBlockCollections) == 0 {
-		t.Logf("block %d has no collections associated with it", blockNum)
+		t.Log(fmt.Sprintf("block %d has no collections associated with it\n", blockNum))
 		return
 	}
 
@@ -170,6 +170,15 @@ func proposeBlockRun(t *testing.T, ctx context.Context, l *narwhalmint.LauncherN
 
 func base64Str(src []byte) string {
 	return base64.StdEncoding.EncodeToString(src)
+}
+
+func hasMatch(s string, matches ...string) bool {
+	for _, m := range matches {
+		if m == s {
+			return true
+		}
+	}
+	return false
 }
 
 func envOrIntDefault(name string, def int) int {
