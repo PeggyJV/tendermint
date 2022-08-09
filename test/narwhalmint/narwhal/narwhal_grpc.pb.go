@@ -316,6 +316,8 @@ type ConfigurationClient interface {
 	NewEpoch(ctx context.Context, in *NewEpochRequest, opts ...grpc.CallOption) (*Empty, error)
 	// Signals a change in networking info
 	NewNetworkInfo(ctx context.Context, in *NewNetworkInfoRequest, opts ...grpc.CallOption) (*Empty, error)
+	// Retrieve multiaddr of narwhal primary
+	GetPrimaryAddress(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*GetPrimaryAddressResponse, error)
 }
 
 type configurationClient struct {
@@ -344,6 +346,15 @@ func (c *configurationClient) NewNetworkInfo(ctx context.Context, in *NewNetwork
 	return out, nil
 }
 
+func (c *configurationClient) GetPrimaryAddress(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*GetPrimaryAddressResponse, error) {
+	out := new(GetPrimaryAddressResponse)
+	err := c.cc.Invoke(ctx, "/narwhal.Configuration/GetPrimaryAddress", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // ConfigurationServer is the server API for Configuration service.
 // All implementations must embed UnimplementedConfigurationServer
 // for forward compatibility
@@ -352,6 +363,8 @@ type ConfigurationServer interface {
 	NewEpoch(context.Context, *NewEpochRequest) (*Empty, error)
 	// Signals a change in networking info
 	NewNetworkInfo(context.Context, *NewNetworkInfoRequest) (*Empty, error)
+	// Retrieve multiaddr of narwhal primary
+	GetPrimaryAddress(context.Context, *Empty) (*GetPrimaryAddressResponse, error)
 	mustEmbedUnimplementedConfigurationServer()
 }
 
@@ -364,6 +377,9 @@ func (UnimplementedConfigurationServer) NewEpoch(context.Context, *NewEpochReque
 }
 func (UnimplementedConfigurationServer) NewNetworkInfo(context.Context, *NewNetworkInfoRequest) (*Empty, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method NewNetworkInfo not implemented")
+}
+func (UnimplementedConfigurationServer) GetPrimaryAddress(context.Context, *Empty) (*GetPrimaryAddressResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetPrimaryAddress not implemented")
 }
 func (UnimplementedConfigurationServer) mustEmbedUnimplementedConfigurationServer() {}
 
@@ -414,6 +430,24 @@ func _Configuration_NewNetworkInfo_Handler(srv interface{}, ctx context.Context,
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Configuration_GetPrimaryAddress_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(Empty)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ConfigurationServer).GetPrimaryAddress(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/narwhal.Configuration/GetPrimaryAddress",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ConfigurationServer).GetPrimaryAddress(ctx, req.(*Empty))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // Configuration_ServiceDesc is the grpc.ServiceDesc for Configuration service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -428,6 +462,10 @@ var Configuration_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "NewNetworkInfo",
 			Handler:    _Configuration_NewNetworkInfo_Handler,
+		},
+		{
+			MethodName: "GetPrimaryAddress",
+			Handler:    _Configuration_GetPrimaryAddress_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
@@ -682,6 +720,7 @@ var WorkerToWorker_ServiceDesc = grpc.ServiceDesc{
 type WorkerToPrimaryClient interface {
 	// Sends a message
 	SendMessage(ctx context.Context, in *BincodeEncodedPayload, opts ...grpc.CallOption) (*Empty, error)
+	WorkerInfo(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*BincodeEncodedPayload, error)
 }
 
 type workerToPrimaryClient struct {
@@ -701,12 +740,22 @@ func (c *workerToPrimaryClient) SendMessage(ctx context.Context, in *BincodeEnco
 	return out, nil
 }
 
+func (c *workerToPrimaryClient) WorkerInfo(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*BincodeEncodedPayload, error) {
+	out := new(BincodeEncodedPayload)
+	err := c.cc.Invoke(ctx, "/narwhal.WorkerToPrimary/WorkerInfo", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // WorkerToPrimaryServer is the server API for WorkerToPrimary service.
 // All implementations must embed UnimplementedWorkerToPrimaryServer
 // for forward compatibility
 type WorkerToPrimaryServer interface {
 	// Sends a message
 	SendMessage(context.Context, *BincodeEncodedPayload) (*Empty, error)
+	WorkerInfo(context.Context, *Empty) (*BincodeEncodedPayload, error)
 	mustEmbedUnimplementedWorkerToPrimaryServer()
 }
 
@@ -716,6 +765,9 @@ type UnimplementedWorkerToPrimaryServer struct {
 
 func (UnimplementedWorkerToPrimaryServer) SendMessage(context.Context, *BincodeEncodedPayload) (*Empty, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method SendMessage not implemented")
+}
+func (UnimplementedWorkerToPrimaryServer) WorkerInfo(context.Context, *Empty) (*BincodeEncodedPayload, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method WorkerInfo not implemented")
 }
 func (UnimplementedWorkerToPrimaryServer) mustEmbedUnimplementedWorkerToPrimaryServer() {}
 
@@ -748,6 +800,24 @@ func _WorkerToPrimary_SendMessage_Handler(srv interface{}, ctx context.Context, 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _WorkerToPrimary_WorkerInfo_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(Empty)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WorkerToPrimaryServer).WorkerInfo(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/narwhal.WorkerToPrimary/WorkerInfo",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WorkerToPrimaryServer).WorkerInfo(ctx, req.(*Empty))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // WorkerToPrimary_ServiceDesc is the grpc.ServiceDesc for WorkerToPrimary service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -758,6 +828,10 @@ var WorkerToPrimary_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "SendMessage",
 			Handler:    _WorkerToPrimary_SendMessage_Handler,
+		},
+		{
+			MethodName: "WorkerInfo",
+			Handler:    _WorkerToPrimary_WorkerInfo_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

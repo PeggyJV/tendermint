@@ -7,8 +7,9 @@ import (
 	"strings"
 
 	"github.com/hashicorp/go-multierror"
-	"github.com/tendermint/tendermint/test/narwhalmint/narwhal"
 	"google.golang.org/grpc"
+
+	"github.com/tendermint/tendermint/test/narwhalmint/narwhal"
 )
 
 // NarwhalPrimaryNodeClient is the grpc Validator service client with additional
@@ -62,19 +63,14 @@ func (n *NarwhalPrimaryNodeClient) CollectionTXs(ctx context.Context, collection
 		return nil, fmt.Errorf("failed to get collection: %w", err)
 	}
 
-	batches, err := takeBatchesFromCollectionsResult(resp)
+	txs, err := takeTxsFromCollectionsResult(resp)
 	if err != nil {
-		return nil, fmt.Errorf("failed to take batches from collection results: %w", err)
+		return nil, fmt.Errorf("failed to take txs from collection results: %w", err)
 	}
 
 	var out [][]byte
-	for _, batchMsg := range batches {
-		if batchMsg.Transactions == nil {
-			continue
-		}
-		for _, tx := range batchMsg.Transactions.Transaction {
-			out = append(out, tx.Transaction)
-		}
+	for _, tx := range txs {
+		out = append(out, tx.Transaction)
 	}
 	return out, nil
 }
@@ -194,6 +190,10 @@ func (b *blockPrep) findRoundCollections(ctx context.Context, startRound, curren
 }
 
 func (b *blockPrep) getRelevantBlockRound(ctx context.Context, currentRound, mostRecentRound uint64, proposedBlockGasCost int, collections []*narwhal.CertificateDigest) (lastCompletedRound uint64, extraCollections []*narwhal.CertificateDigest, _ error) {
+	if currentRound > mostRecentRound {
+		return mostRecentRound, nil, nil
+	}
+
 	readCausalResp, err := b.pc.NodeReadCausal(ctx, &narwhal.NodeReadCausalRequest{
 		PublicKey: &b.publicKey,
 		Round:     currentRound,
@@ -209,14 +209,14 @@ func (b *blockPrep) getRelevantBlockRound(ctx context.Context, currentRound, mos
 
 	var newColls []*narwhal.CertificateDigest
 	for _, collection := range colls {
-		batches, err := b.getCollectionBatches(ctx, collection)
+		txs, err := b.getCollectionTxs(ctx, collection)
 		if err != nil {
-			return 0, nil, fmt.Errorf("failed to get collection batches: %w", err)
+			return 0, nil, fmt.Errorf("failed to get collection txs: %w", err)
 		}
 
-		cost, err := b.getBatchesSize(batches...)
+		cost, err := b.getTxsSize(txs...)
 		if err != nil {
-			return 0, nil, fmt.Errorf("failed to get batch gas cost: %w", err)
+			return 0, nil, fmt.Errorf("failed to get txs cost: %w", err)
 		}
 		proposedBlockGasCost += cost
 		if proposedBlockGasCost > b.blockGasLimit {
@@ -244,20 +244,18 @@ func (b *blockPrep) getRelevantBlockRound(ctx context.Context, currentRound, mos
 	return b.getRelevantBlockRound(ctx, currentRound+1, mostRecentRound, proposedBlockGasCost, newColls)
 }
 
-func (b *blockPrep) getBatchesSize(batches ...*narwhal.BatchMessage) (int, error) {
+func (b *blockPrep) getTxsSize(txs ...*narwhal.Transaction) (int, error) {
 	var size int
-	for _, batch := range batches {
-		if batch.Transactions == nil {
+	for _, tx := range txs {
+		if tx == nil {
 			continue
 		}
-		for _, tx := range batch.Transactions.Transaction {
-			size += len(tx.Transaction)
-		}
+		size += len(tx.Transaction)
 	}
 	return size, nil
 }
 
-func (b *blockPrep) getCollectionBatches(ctx context.Context, collections ...*narwhal.CertificateDigest) ([]*narwhal.BatchMessage, error) {
+func (b *blockPrep) getCollectionTxs(ctx context.Context, collections ...*narwhal.CertificateDigest) ([]*narwhal.Transaction, error) {
 	collectionResp, err := b.vc.GetCollections(ctx, &narwhal.GetCollectionsRequest{
 		CollectionIds: collections,
 	})
@@ -265,12 +263,12 @@ func (b *blockPrep) getCollectionBatches(ctx context.Context, collections ...*na
 		return nil, fmt.Errorf("failed to get collection IDs: %w", err)
 	}
 
-	batches, err := takeBatchesFromCollectionsResult(collectionResp)
+	txs, err := takeTxsFromCollectionsResult(collectionResp)
 	if err != nil {
 		return nil, fmt.Errorf("failed to map collection results: %w", err)
 	}
 
-	return batches, nil
+	return txs, nil
 }
 
 func (b *blockPrep) getNewCollectionIDs(collectionIDs []*narwhal.CertificateDigest) (_ []*narwhal.CertificateDigest, numDuplicatesRemoved int) {
@@ -286,20 +284,26 @@ func (b *blockPrep) getNewCollectionIDs(collectionIDs []*narwhal.CertificateDige
 	return out, numDuplicatesRemoved
 }
 
-func takeBatchesFromCollectionsResult(resp *narwhal.GetCollectionsResponse) ([]*narwhal.BatchMessage, error) {
+func takeTxsFromCollectionsResult(resp *narwhal.GetCollectionsResponse) ([]*narwhal.Transaction, error) {
 	var (
-		errs    []error
-		batches []*narwhal.BatchMessage
+		errs []error
+		txs  []*narwhal.Transaction
 	)
 	for i, res := range resp.Result {
-		batch, resErr := res.GetBatch(), res.GetError()
+		collection, resErr := res.GetCollection(), res.GetError()
 		if resErr != nil {
 			errs = append(errs, fmt.Errorf("failed collection result for id(%s) idx(%d): %s", base64Encode(resErr.Id.Digest), i, resErr.Error.String()))
 			continue
 		}
-		batches = append(batches, batch)
+		for it := range collection.Transactions {
+			tx := collection.Transactions[it]
+			if tx == nil {
+				continue
+			}
+			txs = append(txs, tx)
+		}
 	}
-	return batches, multierror.Append(nil, errs...).ErrorOrNil()
+	return txs, multierror.Append(nil, errs...).ErrorOrNil()
 }
 
 func base64Encode(src []byte) string {

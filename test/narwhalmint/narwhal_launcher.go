@@ -593,7 +593,7 @@ func writeParametersFile(filename string, grpcAddr string) error {
 	// contents pulled from mystenlabs/narwhal demo
 	tmpl := `
 {
-    "batch_size": 5,
+    "batch_size": 250,
     "block_synchronizer": {
         "certificates_synchronize_timeout": "2_000ms",
         "handler_certificate_deliver_timeout": "2_000ms",
@@ -611,7 +611,7 @@ func writeParametersFile(filename string, grpcAddr string) error {
     "max_concurrent_requests": 500000,
     "max_header_delay": "2000ms",
 	"prometheus_metrics": {
-        "socket_addr": "127.0.0.1:0"
+        "socket_addr": "/ip4/127.0.0.1/tcp/0/http"
     },
     "sync_retry_delay": "10_000ms",
     "sync_retry_nodes": 3

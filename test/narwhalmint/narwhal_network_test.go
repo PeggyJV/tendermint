@@ -13,6 +13,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
 	"github.com/tendermint/tendermint/test/narwhalmint"
 )
 
@@ -63,7 +64,7 @@ func TestNarwhalNetwork(t *testing.T) {
 
 	require.NoError(t, l.Start(ctx))
 
-	waitDir := 3 * time.Second
+	waitDir := 5 * time.Second
 	t.Logf("waiting %s for narwhal cluster to be ready", waitDir)
 	time.Sleep(waitDir)
 
@@ -78,7 +79,7 @@ func TestNarwhalNetwork(t *testing.T) {
 		}
 	}()
 
-	maxTXs := 500
+	maxTXs := 5000
 	t.Logf("submitting %d txs", maxTXs)
 	for i := 0; i < maxTXs; i++ {
 		txPayload := []byte("payload-" + strconv.Itoa(i))
@@ -95,12 +96,16 @@ func TestNarwhalNetwork(t *testing.T) {
 	time.Sleep(waitDir)
 	t.Log("setup complete\n")
 
-	timedCTX, cancel := context.WithTimeout(ctx, 5*time.Second)
+	timedCTX, cancel := context.WithTimeout(ctx, waitDir)
 	proposeBlockRun(t, timedCTX, &l, 0)
 	cancel()
 
-	timedCTX, cancel = context.WithTimeout(ctx, 5*time.Second)
+	timedCTX, cancel = context.WithTimeout(ctx, waitDir)
 	proposeBlockRun(t, timedCTX, &l, 1)
+	cancel()
+
+	timedCTX, cancel = context.WithTimeout(ctx, waitDir)
+	proposeBlockRun(t, timedCTX, &l, 2)
 	cancel()
 
 	t.Log("terminating narwhal_nodes...")
