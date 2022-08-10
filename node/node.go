@@ -29,6 +29,7 @@ import (
 	"github.com/tendermint/tendermint/libs/service"
 	"github.com/tendermint/tendermint/light"
 	mempl "github.com/tendermint/tendermint/mempool"
+	"github.com/tendermint/tendermint/mempool/narwhal"
 	"github.com/tendermint/tendermint/p2p"
 	"github.com/tendermint/tendermint/p2p/pex"
 	"github.com/tendermint/tendermint/privval"
@@ -186,6 +187,11 @@ func StateProvider(stateProvider statesync.StateProvider) Option {
 
 //------------------------------------------------------------------------------
 
+type wal interface {
+	InitWAL() error
+	CloseWAL()
+}
+
 // Node is the highest level interface to a full Tendermint node.
 // It includes all configuration information and running services.
 type Node struct {
@@ -211,7 +217,7 @@ type Node struct {
 	bcReactor         p2p.Reactor       // for fast-syncing
 	mempoolReactor    *mempl.Reactor    // for gossipping transactions
 	mempoolABCI       *mempl.ABCI
-	mempoolPool       *mempl.PoolCList
+	mempoolWAL        wal
 	stateSync         bool                    // whether the node should state sync on startup
 	stateSyncReactor  *statesync.Reactor      // for hosting and restoring state sync snapshots
 	stateSyncProvider statesync.StateProvider // provides state data for bootstrapping a node
@@ -362,10 +368,60 @@ func onlyValidatorIsUs(state sm.State, pubKey crypto.PubKey) bool {
 	return bytes.Equal(pubKey.Address(), addr)
 }
 
-func createMempoolAndMempoolReactor(config *cfg.Config, proxyApp proxy.AppConns,
-	state sm.State, memplMetrics *mempl.Metrics, logger log.Logger) (*mempl.ABCI, *mempl.Reactor, *mempl.PoolCList) {
-
+func createMempoolAndMempoolReactor(
+	ctx context.Context,
+	config *cfg.Config,
+	proxyApp proxy.AppConns,
+	state sm.State,
+	memplMetrics *mempl.Metrics,
+	logger log.Logger,
+) (*mempl.ABCI, *mempl.Reactor, wal, error) {
 	mempoolLogger := logger.With("module", "mempool")
+
+	var (
+		mpABCI  *mempl.ABCI
+		reactor *mempl.Reactor
+		walImpl wal
+	)
+	switch {
+	case config.Narwhal != nil:
+		var err error
+		// note that the narwhal mempool does not make use of a WAL or a reactor
+		mpABCI, err = newNarwhalMempoolABCI(ctx, mempoolLogger, proxyApp.Mempool(), config)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+	default:
+		mpABCI, reactor, walImpl = newClistMempoolABCI(logger, state, proxyApp.Mempool(), config, memplMetrics)
+	}
+
+	if config.Consensus.WaitForTxs() {
+		mpABCI.EnableTxsAvailable()
+	}
+	return mpABCI, reactor, walImpl, nil
+}
+
+func newNarwhalMempoolABCI(ctx context.Context, logger log.Logger, appConn proxy.AppConnMempool, config *cfg.Config) (*mempl.ABCI, error) {
+	pool, err := narwhal.New(ctx, *config.Narwhal)
+	if err != nil {
+		return nil, err
+	}
+
+	return mempl.NewABCI(
+		logger.With("component", "abci"),
+		config.Mempool,
+		appConn,
+		pool,
+	), nil
+}
+
+func newClistMempoolABCI(
+	logger log.Logger,
+	state sm.State,
+	appConn proxy.AppConnMempool,
+	config *cfg.Config,
+	memplMetrics *mempl.Metrics,
+) (*mempl.ABCI, *mempl.Reactor, wal) {
 	pool := mempl.NewPoolCList(
 		config.Mempool,
 		state.LastBlockHeight,
@@ -373,21 +429,18 @@ func createMempoolAndMempoolReactor(config *cfg.Config, proxyApp proxy.AppConns,
 		mempl.WithPreCheck(sm.TxPreCheck(state)),
 		mempl.WithPostCheck(sm.TxPostCheck(state)),
 	)
-	pool.SetLogger(mempoolLogger.With("component", "pool_clist"))
+	pool.SetLogger(logger.With("component", "pool_clist"))
 
 	mpABCI := mempl.NewABCI(
-		mempoolLogger.With("component", "abci"),
+		logger.With("component", "abci"),
 		config.Mempool,
-		proxyApp.Mempool(),
+		appConn,
 		pool,
 	)
-	mempoolReactor := mempl.NewReactor(config.Mempool, mpABCI, pool)
-	mempoolReactor.SetLogger(mempoolLogger.With("component", "reactor"))
+	reactor := mempl.NewReactor(config.Mempool, mpABCI, pool)
+	reactor.SetLogger(logger.With("component", "reactor"))
 
-	if config.Consensus.WaitForTxs() {
-		mpABCI.EnableTxsAvailable()
-	}
-	return mpABCI, mempoolReactor, pool
+	return mpABCI, reactor, pool
 }
 
 func createEvidenceReactor(config *cfg.Config, dbProvider DBProvider,
@@ -551,7 +604,9 @@ func createSwitch(config *cfg.Config,
 		p2p.SwitchPeerFilters(peerFilters...),
 	)
 	sw.SetLogger(p2pLogger)
-	sw.AddReactor("MEMPOOL", mempoolReactor)
+	if mempoolReactor != nil {
+		sw.AddReactor("MEMPOOL", mempoolReactor)
+	}
 	sw.AddReactor("BLOCKCHAIN", bcReactor)
 	sw.AddReactor("CONSENSUS", consensusReactor)
 	sw.AddReactor("EVIDENCE", evidenceReactor)
@@ -678,7 +733,7 @@ func NewNode(config *cfg.Config,
 	metricsProvider MetricsProvider,
 	logger log.Logger,
 	options ...Option) (*Node, error) {
-
+	ctx := context.Background() // TODO(berg): wire this up
 	blockStore, stateDB, err := initDBs(config, dbProvider)
 	if err != nil {
 		return nil, err
@@ -760,7 +815,10 @@ func NewNode(config *cfg.Config,
 	csMetrics, p2pMetrics, memplMetrics, smMetrics := metricsProvider(genDoc.ChainID)
 
 	// Make MempoolReactor
-	mpABCI, mempoolReactor, clistPool := createMempoolAndMempoolReactor(config, proxyApp, state, memplMetrics, logger)
+	mpABCI, mempoolReactor, clistPool, err := createMempoolAndMempoolReactor(ctx, config, proxyApp, state, memplMetrics, logger)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create mempool: %w", err)
+	}
 
 	// Make Evidence Reactor
 	evidenceReactor, evidencePool, err := createEvidenceReactor(config, dbProvider, stateDB, blockStore, logger)
@@ -878,7 +936,7 @@ func NewNode(config *cfg.Config,
 		bcReactor:        bcReactor,
 		mempoolReactor:   mempoolReactor,
 		mempoolABCI:      mpABCI,
-		mempoolPool:      clistPool,
+		mempoolWAL:       clistPool,
 		consensusState:   consensusState,
 		consensusReactor: consensusReactor,
 		stateSyncReactor: stateSyncReactor,
@@ -939,8 +997,8 @@ func (n *Node) OnStart() error {
 
 	n.isListening = true
 
-	if n.config.Mempool.WalEnabled() && n.mempoolPool != nil {
-		err = n.mempoolPool.InitWAL()
+	if n.config.Mempool.WalEnabled() && n.mempoolWAL != nil {
+		err = n.mempoolWAL.InitWAL()
 		if err != nil {
 			return fmt.Errorf("init mempool WAL: %w", err)
 		}
@@ -994,8 +1052,8 @@ func (n *Node) OnStop() {
 	}
 
 	// stop mempool WAL
-	if n.config.Mempool.WalEnabled() && n.mempoolPool != nil {
-		n.mempoolPool.CloseWAL()
+	if n.config.Mempool.WalEnabled() && n.mempoolWAL != nil {
+		n.mempoolWAL.CloseWAL()
 	}
 
 	if err := n.transport.Close(); err != nil {

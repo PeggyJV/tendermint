@@ -19,6 +19,7 @@ coverage.txt
 docs/_build
 docs/dist
 docs/.vuepress/dist
+mempool/narwhal/internal/narwhalmint/test_results
 *.log
 abci-cli
 docs/node_modules/

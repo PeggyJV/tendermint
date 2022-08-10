@@ -371,6 +371,20 @@ max_tx_bytes = {{ .Mempool.MaxTxBytes }}
 # XXX: Unused due to https://github.com/tendermint/tendermint/issues/5796
 max_batch_bytes = {{ .Mempool.MaxBatchBytes }}
 
+{{ if .Narwhal }}
+#######################################################
+###			Narwhal Config							###
+#######################################################\
+[narwhal]
+primary_addr = "{{ .Narwhal.PrimaryAddr }}"
+primary_base64_public_key = "{{ .Narwhal.PrimaryEncodedPublicKey }}"
+{{- $endIdx := .Narwhal.StopIdx }}
+workers = [{{ range $i, $el := .Narwhal.Workers }}
+	{ name = "{{ $el.Name }}", worker_addr = "{{ $el.Addr }}" }{{- if lt $i $endIdx}},{{ end -}}
+{{ end }}
+]
+{{ end }}
+
 #######################################################
 ###         State Sync Configuration Options        ###
 #######################################################

@@ -150,7 +150,8 @@ func ReapVerify() ReapOptFn {
 
 // RemOption is an option for removing txs from a pool.
 type RemOption struct {
-	TxKeys []types.TxKey
+	TxKeys      []types.TxKey
+	Collections *types.DAGCollections
 }
 
 // RemOptFn is a functional option definition for setting fields on RemOption.
@@ -169,6 +170,12 @@ func CoalesceRemOptFns(opts ...RemOptFn) RemOption {
 func RemByTxKeys(txs ...types.TxKey) RemOptFn {
 	return func(option *RemOption) {
 		option.TxKeys = append(option.TxKeys, txs...)
+	}
+}
+
+func RemCollections(coll types.DAGCollections) RemOptFn {
+	return func(option *RemOption) {
+		option.Collections = &coll
 	}
 }
 

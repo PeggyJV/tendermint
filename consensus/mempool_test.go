@@ -125,8 +125,8 @@ func TestMempoolTxConcurrentWithCommit(t *testing.T) {
 	require.NoError(t, err)
 	newBlockHeaderCh := subscribe(cs.eventBus, types.EventQueryNewBlockHeader)
 
-	const numTxs int64 = 3000
-	go deliverTxsRange(ctx, cs, 0, int(numTxs))
+	const numTxs = 3000
+	go deliverTxsRange(ctx, cs, 0, numTxs)
 
 	startTestRound(cs, cs.Height, cs.Round)
 	for n := int64(0); n < numTxs; {
