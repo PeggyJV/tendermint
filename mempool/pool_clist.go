@@ -273,20 +273,22 @@ func (mem *PoolCList) CheckTxPrep(ctx context.Context, tx types.Tx) error {
 	return nil
 }
 
-func (mem *PoolCList) Reap(ctx context.Context, opt ReapOption) (types.TxReaper, error) {
+func (mem *PoolCList) Reap(ctx context.Context, opt ReapOption) (types.Data, error) {
 	if opt.NumTxs > -1 && (opt.GasLimit > -1 || opt.BlockSizeLimit > -1) {
-		return nil, fmt.Errorf("reaping by num txs and one of gas limit or block size limit is not supported")
+		return types.Data{}, fmt.Errorf("reaping by num txs and one of gas limit or block size limit is not supported")
 	}
 
-	if opt.NumTxs == -1 && opt.GasLimit == -1 && opt.BlockSizeLimit == -1 {
-		return mem.reapMaxTxs(-1), nil
+	var txs types.Txs
+	switch {
+	case opt.NumTxs == -1 && opt.GasLimit == -1 && opt.BlockSizeLimit == -1:
+		txs = mem.reapMaxTxs(-1)
+	case opt.NumTxs > -1:
+		txs = mem.reapMaxTxs(opt.NumTxs)
+	default:
+		txs = mem.reapMaxBytesMaxGas(opt.BlockSizeLimit, opt.GasLimit)
 	}
 
-	if opt.NumTxs > -1 {
-		return mem.reapMaxTxs(opt.NumTxs), nil
-	}
-
-	return mem.reapMaxBytesMaxGas(opt.BlockSizeLimit, opt.GasLimit), nil
+	return types.Data{Txs: txs}, nil
 }
 
 func (mem *PoolCList) Recheck(ctx context.Context, appConn proxy.AppConnMempool) (OpResult, error) {

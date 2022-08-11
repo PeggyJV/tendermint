@@ -185,11 +185,7 @@ func TestMempoolRmBadTx(t *testing.T) {
 				t.Errorf("error getting reaper: %s", err)
 				return
 			}
-			txs, err := reaper.Txs(ctx)
-			if err != nil {
-				t.Errorf("error getting txs from reaper: %s", err)
-				return
-			}
+			txs := reaper.Txs
 			if len(txs) == 0 {
 				emptyMempoolCh <- struct{}{}
 				return

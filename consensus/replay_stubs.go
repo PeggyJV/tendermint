@@ -41,8 +41,8 @@ func (e emptyMempool) PrepBlockFinality(_ context.Context) (func(), error) {
 	return func() {}, nil
 }
 
-func (e emptyMempool) Reap(ctx context.Context, opts ...mempl.ReapOptFn) (types.TxReaper, error) {
-	return types.Txs{}, nil
+func (e emptyMempool) Reap(ctx context.Context, opts ...mempl.ReapOptFn) (types.Data, error) {
+	return types.Data{}, nil
 }
 
 func (e emptyMempool) TxsAvailable() <-chan struct{} {

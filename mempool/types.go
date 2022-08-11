@@ -50,7 +50,7 @@ type Pool interface {
 
 	// Reap returns Txs from the given pool. It is up to the pool implementation to define
 	// how they handle the possible predicates from option combinations.
-	Reap(ctx context.Context, opts ReapOption) (types.TxReaper, error)
+	Reap(ctx context.Context, opts ReapOption) (types.Data, error)
 
 	// Recheck should trigger a recheck of the uncommitted txs within the mempool. Note
 	// that not all mempools make use of this. For example, the narwhal mempool does no

@@ -353,9 +353,7 @@ func waitForTxsOnReactor(t *testing.T, txs types.Txs, reactor *Reactor, reactorI
 	reaper, err := mp.Reap(ctx, ReapTxs(len(txs)))
 	require.NoError(t, err)
 
-	reapedTxs, err := reaper.Txs(ctx)
-	require.NoError(t, err)
-
+	reapedTxs := reaper.Txs
 	for i, tx := range txs {
 		assert.Equalf(t, tx, reapedTxs[i],
 			"txs at index %d on reactor %d don't match: %v vs %v", i, reactorIndex, tx, reapedTxs[i])

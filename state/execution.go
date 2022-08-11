@@ -27,7 +27,7 @@ type Mempool interface {
 	) error
 	NewHydratedBlock(ctx context.Context, block *types.Block) (*types.Block, error)
 	PrepBlockFinality(_ context.Context) (func(), error)
-	Reap(ctx context.Context, opts ...mempl.ReapOptFn) (types.TxReaper, error)
+	Reap(ctx context.Context, opts ...mempl.ReapOptFn) (types.Data, error)
 }
 
 // -----------------------------------------------------------------------------
@@ -119,7 +119,7 @@ func (blockExec *BlockExecutor) CreateProposalBlock(
 	// Fetch a limited amount of valid txs
 	maxDataBytes := types.MaxDataBytes(maxBytes, evSize, state.Validators.Size())
 
-	reaper, err := blockExec.mempool.Reap(ctx,
+	data, err := blockExec.mempool.Reap(ctx,
 		mempl.ReapBytes(maxDataBytes),
 		mempl.ReapGas(maxGas),
 		// TODO(berg): we can do the verification as an option to the Reap. This is actually pretty
@@ -132,7 +132,7 @@ func (blockExec *BlockExecutor) CreateProposalBlock(
 		return nil, nil, err
 	}
 
-	bl, ps := state.MakeBlockV2(height, reaper.BlockData(), commit, evidence, proposerAddr)
+	bl, ps := state.MakeBlockV2(height, data, commit, evidence, proposerAddr)
 	return bl, ps, nil
 }
 

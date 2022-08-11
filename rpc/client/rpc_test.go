@@ -347,8 +347,7 @@ func TestBroadcastTxSync(t *testing.T) {
 		reaper, err := mempool.Reap(ctx, mempl.ReapTxs(len(tx)))
 		require.NoError(err)
 
-		txs, err := reaper.Txs(ctx)
-		require.NoError(err)
+		txs := reaper.Txs
 		require.EqualValues(tx, txs[0])
 		require.NoError(mempool.Flush(ctx))
 	}

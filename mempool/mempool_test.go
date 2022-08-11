@@ -181,8 +181,7 @@ func TestReapMaxBytesMaxGas(t *testing.T) {
 		reaper, err := mp.Reap(ctx, ReapBytes(tt.maxBytes), ReapGas(tt.maxGas))
 		require.NoError(t, err)
 
-		got, err := reaper.Txs(ctx)
-		require.NoError(t, err)
+		got := reaper.Txs
 		assert.Equal(t, tt.expectedNumTxs, len(got), "Got %d txs, expected %d, tc #%d",
 			len(got), tt.expectedNumTxs, tcIndex)
 		require.NoError(t, mp.Flush(ctx))
@@ -415,8 +414,7 @@ func TestSerialReap(t *testing.T) {
 		reaper, err := mp.Reap(ctx)
 		require.NoError(t, err)
 
-		txs, err := reaper.Txs(ctx)
-		require.NoError(t, err)
+		txs := reaper.Txs
 		require.Equal(t, len(txs), exp, fmt.Sprintf("Expected to reap %v txs but got %v", exp, len(txs)))
 	}
 

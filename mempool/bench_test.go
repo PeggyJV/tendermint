@@ -29,10 +29,8 @@ func BenchmarkReap(b *testing.B) {
 	}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		reaper, err := mp.Reap(ctx, ReapBytes(100000000), ReapGas(10000000))
+		_, err := mp.Reap(ctx, ReapBytes(100000000), ReapGas(10000000))
 		require.NoError(b, err)
-
-		reaper.Txs(ctx)
 	}
 }
 

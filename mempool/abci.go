@@ -242,23 +242,23 @@ func (a *ABCI) PrepBlockFinality(_ context.Context) (func(), error) {
 }
 
 // Reap calls the underlying pool's Reap method with the given options.
-func (a *ABCI) Reap(ctx context.Context, opts ...ReapOptFn) (types.TxReaper, error) {
+func (a *ABCI) Reap(ctx context.Context, opts ...ReapOptFn) (types.Data, error) {
 	opt := CoalesceReapOpts(opts...)
-	reaper, err := a.pool.Reap(ctx, opt)
+	data, err := a.pool.Reap(ctx, opt)
 	if err != nil {
-		return nil, err
+		return types.Data{}, err
 	}
 
 	if opt.Verify {
-		return a.verifyReaper(ctx, reaper)
+		return a.verifyReaper(ctx, data)
 	}
 
-	return reaper, nil
+	return data, nil
 }
 
-func (a *ABCI) verifyReaper(ctx context.Context, reaper types.TxReaper) (types.TxReaper, error) {
+func (a *ABCI) verifyReaper(ctx context.Context, data types.Data) (types.Data, error) {
 	// TODO(berg): wire this up, for now just a no op, all txs are good...
-	return reaper, nil
+	return data, nil
 }
 
 // Remove removes txs from the cache and underlying pool.

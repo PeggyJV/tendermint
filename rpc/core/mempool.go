@@ -143,10 +143,7 @@ func UnconfirmedTxs(ctx *rpctypes.Context, limitPtr *int) (*ctypes.ResultUnconfi
 		return nil, err
 	}
 
-	txs, err := reaper.Txs(ctx.Context())
-	if err != nil {
-		return nil, err
-	}
+	txs := reaper.Txs
 	meta := env.Mempool.PoolMeta()
 	return &ctypes.ResultUnconfirmedTxs{
 		Count:      len(txs),

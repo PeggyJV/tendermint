@@ -35,6 +35,6 @@ func (m Mempool) PrepBlockFinality(_ context.Context) (func(), error) {
 	return func() {}, nil
 }
 
-func (m Mempool) Reap(ctx context.Context, opts ...mempl.ReapOptFn) (types.TxReaper, error) {
-	return types.Txs{}, nil
+func (m Mempool) Reap(ctx context.Context, opts ...mempl.ReapOptFn) (types.Data, error) {
+	return types.Data{}, nil
 }
