@@ -336,11 +336,6 @@ func (mem *PoolCList) Remove(ctx context.Context, opt RemOption) (OpResult, erro
 	return opRes, err
 }
 
-// // NOTE: not thread safe - should only be called once, on startup
-// func (mem *PoolCList) EnableTxsAvailable() {
-// 	mem.txsAvailable = make(chan struct{}, 1)
-// }
-
 // SetLogger sets the Logger.
 func (mem *PoolCList) SetLogger(l log.Logger) {
 	mem.logger = l
@@ -498,11 +493,6 @@ func (mem *PoolCList) resCbFirstTime(
 	return mem.getOpResult()
 }
 
-// // Safe for concurrent use by multiple goroutines.
-// func (mem *PoolCList) TxsAvailable() <-chan struct{} {
-// 	return mem.txsAvailable
-// }
-
 func (mem *PoolCList) getOpResult() OpResult {
 	var opRes OpResult
 	if mem.size() > 0 {
@@ -561,69 +551,6 @@ func (mem *PoolCList) reapMaxTxs(max int) types.Txs {
 	}
 	return txs
 }
-
-// // Lock() must be help by the caller during execution.
-// func (mem *PoolCList) Update(
-// 	height int64,
-// 	txs types.Txs,
-// 	deliverTxResponses []*abci.ResponseDeliverTx,
-// 	preCheck PreCheckFunc,
-// 	postCheck PostCheckFunc,
-// ) error {
-// 	// Set height
-// 	mem.height = height
-// 	mem.notifiedTxsAvailable = false
-//
-// 	if preCheck != nil {
-// 		mem.preCheck = preCheck
-// 	}
-// 	if postCheck != nil {
-// 		mem.postCheck = postCheck
-// 	}
-//
-// 	for i, tx := range txs {
-// 		if deliverTxResponses[i].Code == abci.CodeTypeOK {
-// 			// Add valid committed tx to the cache (if missing).
-// 			_ = mem.cache.Push(tx)
-// 		} else if !mem.config.KeepInvalidTxsInCache {
-// 			// Allow invalid transactions to be resubmitted.
-// 			mem.cache.Remove(tx)
-// 		}
-//
-// 		// Remove committed tx from the mempool.
-// 		//
-// 		// Note an evil proposer can drop valid txs!
-// 		// Mempool before:
-// 		//   100 -> 101 -> 102
-// 		// Block, proposed by an evil proposer:
-// 		//   101 -> 102
-// 		// Mempool after:
-// 		//   100
-// 		// https://github.com/tendermint/tendermint/issues/3322.
-// 		if e, ok := mem.txsMap.Load(TxKey(tx)); ok {
-// 			mem.removeTx(tx, e.(*clist.CElement), false)
-// 		}
-// 	}
-//
-// 	// Either recheck non-committed txs to see if they became invalid
-// 	// or just notify there're some txs left.
-// 	if mem.size() > 0 {
-// 		if mem.config.Recheck {
-// 			mem.logger.Debug("recheck txs", "numtxs", mem.size(), "height", height)
-// 			mem.recheckTxs()
-// 			// At this point, mem.txs are being rechecked.
-// 			// mem.recheckCursor re-scans mem.txs and possibly removes some txs.
-// 			// Before mem.Reap(), we should wait for mem.recheckCursor to be nil.
-// 		} else {
-// 			mem.notifyTxsAvailable()
-// 		}
-// 	}
-//
-// 	// Update metrics
-// 	mem.metrics.Size.Set(float64(mem.size()))
-//
-// 	return nil
-// }
 
 // --------------------------------------------------------------------------------
 
