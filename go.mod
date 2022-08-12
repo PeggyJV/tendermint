@@ -41,7 +41,7 @@ require (
 
 require (
 	github.com/creachadair/atomicfile v0.2.4
-	github.com/google/go-cmp v0.5.7
+	github.com/google/go-cmp v0.5.8
 	gotest.tools v2.2.0+incompatible
 )
 
