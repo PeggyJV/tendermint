@@ -402,7 +402,8 @@ func createMempoolAndMempoolReactor(
 }
 
 func newNarwhalMempoolABCI(ctx context.Context, logger log.Logger, appConn proxy.AppConnMempool, config *cfg.Config) (*mempl.ABCI, error) {
-	pool, err := narwhal.New(ctx, *config.Narwhal)
+	nLogger := logger.With("component", "narwhal_pool")
+	pool, err := narwhal.New(ctx, *config.Narwhal, narwhal.WithLogger(nLogger))
 	if err != nil {
 		return nil, err
 	}

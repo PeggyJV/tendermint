@@ -6,12 +6,14 @@
 OS=$(uname)
 NARWHAL_DIR=$(echo -n "$NARWHAL_DIR")
 
+build_docker_tm:
+	GOOS=linux GOARCH=amd64 go build -v -o docker_run/build/tendermint ../../../cmd/tendermint
+
 compile_protos: install_protoc
 	protoc -I $(NARWHAL_DIR)/types/proto \
      	--go_out=. --go_opt=Mnarwhal.proto=./narwhalproto \
      	--go-grpc_out=. --go-grpc_opt=Mnarwhal.proto=./narwhalproto \
     	narwhal.proto
-
 
 install_tools: install_protoc install_proto_gen_go install_proto_grpc_plugin
 

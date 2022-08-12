@@ -19,11 +19,17 @@ coverage.txt
 docs/_build
 docs/dist
 docs/.vuepress/dist
-mempool/narwhal/internal/narwhalmint/test_results
 *.log
 abci-cli
 docs/node_modules/
 index.html.md
+mempool/narwhal/internal/narwhalmint/test_results
+mempool/narwhal/internal/docker_run/compose.logs
+mempool/narwhal/internal/docker_run/build/tendermint
+mempool/narwhal/internal/narwhalmint/docker_run/build/node*/data/*.db
+mempool/narwhal/internal/docker_run/build/node*/data/cs.wal
+mempool/narwhal/internal/docker_run/validators/validator-*/logs
+mempool/narwhal/internal/docker_run/validators/validator-*/db-*
 
 scripts/wal2json/wal2json
 scripts/cutWALUntil/cutWALUntil

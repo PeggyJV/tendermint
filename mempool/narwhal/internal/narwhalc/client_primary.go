@@ -197,7 +197,7 @@ type blockPrep struct {
 func (b *blockPrep) nextBlockCollections(ctx context.Context) (*narwhalproto.CertificateDigest, []*narwhalproto.CertificateDigest, error) {
 	roundsResp, err := b.pc.Rounds(ctx, &narwhalproto.RoundsRequest{PublicKey: &b.publicKey})
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to make rounds request for pk(%s): %w", b.publicKey.Bytes, err)
+		return nil, nil, fmt.Errorf("failed to make rounds request for pk(%s): %w", base64Encode(b.publicKey.Bytes), err)
 	}
 
 	oldest, mostRecentRound := roundsResp.OldestRound, roundsResp.NewestRound

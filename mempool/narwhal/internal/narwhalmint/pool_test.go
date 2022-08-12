@@ -247,6 +247,7 @@ func (t txStats) getUnreapedTx(i int) string {
 }
 
 func wait(t *testing.T, secs int, details string) {
+	t.Helper()
 	dur := time.Duration(secs) * time.Second
 	t.Logf("waiting %s for %s", dur.String(), details)
 	time.Sleep(dur)

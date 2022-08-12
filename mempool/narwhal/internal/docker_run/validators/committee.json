@@ -1,0 +1,61 @@
+{
+  "authorities": {
+    "/iIye00hpCVaUQlM5AQ3s7OtO3Fc4Z2SPzzmVVHIQbM=": {
+      "primary": {
+        "primary_to_primary": "/ip4/192.167.10.10/tcp/54204/http",
+        "worker_to_primary": "/ip4/192.167.10.10/tcp/54205/http"
+      },
+      "stake": 1,
+      "workers": {
+        "0": {
+          "primary_to_worker": "/ip4/192.167.10.11/tcp/54207/http",
+          "transactions": "/ip4/192.167.10.11/tcp/54208/http",
+          "worker_to_worker": "/ip4/192.167.10.11/tcp/54209/http"
+        }
+      }
+    },
+    "1cRbw2DMEkjV0TETZjQyFEAXWTEldI41XfJlJSh/8iE=": {
+      "primary": {
+        "primary_to_primary": "/ip4/192.167.10.6/tcp/54204/http",
+        "worker_to_primary": "/ip4/192.167.10.6/tcp/54205/http"
+      },
+      "stake": 1,
+      "workers": {
+        "0": {
+          "primary_to_worker": "/ip4/192.167.10.7/tcp/54207/http",
+          "transactions": "/ip4/192.167.10.7/tcp/54208/http",
+          "worker_to_worker": "/ip4/192.167.10.7/tcp/54209/http"
+        }
+      }
+    },
+    "4aS/R5kRmN3wa67DAJSTHVTmiV2CJDm8v6ceWWeVcqQ=": {
+      "primary": {
+        "primary_to_primary": "/ip4/192.167.10.8/tcp/54204/http",
+        "worker_to_primary": "/ip4/192.167.10.8/tcp/54205/http"
+      },
+      "stake": 1,
+      "workers": {
+        "0": {
+          "primary_to_worker": "/ip4/192.167.10.9/tcp/54207/http",
+          "transactions": "/ip4/192.167.10.9/tcp/54208/http",
+          "worker_to_worker": "/ip4/192.167.10.9/tcp/54209/http"
+        }
+      }
+    },
+    "lR0nKaHqPlLGaYNHyL36KnQS26BLg7buL0rm7JIXxAI=": {
+      "primary": {
+        "primary_to_primary": "/ip4/192.167.10.12/tcp/54204/http",
+        "worker_to_primary": "/ip4/192.167.10.12/tcp/54205/http"
+      },
+      "stake": 1,
+      "workers": {
+        "0": {
+          "primary_to_worker": "/ip4/192.167.10.13/tcp/54207/http",
+          "transactions": "/ip4/192.167.10.13/tcp/54208/http",
+          "worker_to_worker": "/ip4/192.167.10.13/tcp/54209/http"
+        }
+      }
+    }
+  },
+  "epoch": 0
+}
