@@ -4,9 +4,13 @@ import (
 	"bytes"
 	"fmt"
 	"io/ioutil"
+	"os"
 	"path/filepath"
 	"strings"
 	"text/template"
+
+	"github.com/mitchellh/mapstructure"
+	"github.com/pelletier/go-toml"
 
 	tmos "github.com/tendermint/tendermint/libs/os"
 )
@@ -17,13 +21,10 @@ const DefaultDirPerm = 0700
 var configTemplate *template.Template
 
 func init() {
-	var err error
 	tmpl := template.New("configFileTemplate").Funcs(template.FuncMap{
 		"StringsJoin": strings.Join,
 	})
-	if configTemplate, err = tmpl.Parse(defaultConfigTemplate); err != nil {
-		panic(err)
-	}
+	configTemplate = template.Must(tmpl.Parse(defaultConfigTemplate))
 }
 
 /****** these are for production settings ***********/
@@ -47,6 +48,46 @@ func EnsureRoot(rootDir string) {
 	if !tmos.FileExists(configFilePath) {
 		writeDefaultConfigFile(configFilePath)
 	}
+}
+
+// UnmarshalConfig unmarshals a config from raw bytes into the provided config.
+func UnmarshalConfig(b []byte, cfg *Config) error {
+	var raw map[any]any
+	err := toml.Unmarshal(b, &raw)
+	if err != nil {
+		return err
+	}
+
+	// decoder config borrowed from viper's decoding, we're implicity coupled
+	// to it atm.
+	dec, err := mapstructure.NewDecoder(&mapstructure.DecoderConfig{
+		Result:           cfg,
+		WeaklyTypedInput: true,
+		DecodeHook: mapstructure.ComposeDecodeHookFunc(
+			mapstructure.StringToTimeDurationHookFunc(),
+			mapstructure.StringToSliceHookFunc(","),
+		),
+	})
+	if err != nil {
+		return err
+	}
+
+	err = dec.Decode(raw)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+// ReadConfigFile reads the config file. It does not supply default values.
+func ReadConfigFile(filename string) (*Config, error) {
+	bb, err := os.ReadFile(filename)
+	if err != nil {
+		return nil, err
+	}
+
+	var cfg Config
+	return &cfg, UnmarshalConfig(bb, &cfg)
 }
 
 // XXX: this func should probably be called by cmd/tendermint/commands/init.go

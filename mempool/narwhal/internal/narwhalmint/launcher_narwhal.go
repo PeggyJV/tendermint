@@ -20,13 +20,14 @@ import (
 	"github.com/tendermint/tendermint/config"
 )
 
-// Launcher is can set up and run a narwhal cluster.
-type Launcher struct {
-	BlockSizeLimitBytes int
-	Host                string
-	Out                 io.Writer
-	Primaries           int // will default to 4 when not set
-	Workers             int // will default to 1 when not set
+// LauncherNarwhal is can set up and run a narwhal cluster.
+type LauncherNarwhal struct {
+	BatchSize  int // will default to 5000
+	HeaderSize int // will default to 500
+	Host       string
+	Out        io.Writer
+	Primaries  int // will default to 4 when not set
+	Workers    int // will default to 1 when not set
 
 	dirs             testDirs
 	committeeCFG     committeeCFG
@@ -34,8 +35,8 @@ type Launcher struct {
 	status           string
 }
 
-func (l *Launcher) NarwhalMempoolConfigs() []config.NarwhalMempoolConfig {
-	out := make([]config.NarwhalMempoolConfig, 0, len(l.committeeCFG.Authorities))
+func (l *LauncherNarwhal) NarwhalMempoolConfigs() []*config.NarwhalMempoolConfig {
+	out := make([]*config.NarwhalMempoolConfig, 0, len(l.committeeCFG.Authorities))
 	for pk, primary := range l.committeeCFG.Authorities {
 		cfg := config.NarwhalMempoolConfig{
 			PrimaryAddr:             primary.Primary.GRPC.HostPort(),
@@ -49,18 +50,24 @@ func (l *Launcher) NarwhalMempoolConfigs() []config.NarwhalMempoolConfig {
 			})
 			i++
 		}
-		out = append(out, cfg)
+		out = append(out, &cfg)
 	}
 	return out
 }
 
 // Dir is the root directory for the narwhal nodes to execute from.
-func (l *Launcher) Dir() string {
+func (l *LauncherNarwhal) Dir() string {
 	return l.dirs.rootDir
 }
 
 // SetupFS sets up the filesystem to run the narwhal nodes.
-func (l *Launcher) SetupFS(ctx context.Context, now time.Time) (e error) {
+func (l *LauncherNarwhal) SetupFS(ctx context.Context, now time.Time) error {
+	if l.BatchSize == 0 {
+		l.BatchSize = 5000
+	}
+	if l.HeaderSize == 0 {
+		l.HeaderSize = 500
+	}
 	if l.Primaries == 0 {
 		l.Primaries = 4
 		l.println("setting primaries to default value of 4")
@@ -69,12 +76,6 @@ func (l *Launcher) SetupFS(ctx context.Context, now time.Time) (e error) {
 		l.Workers = 1
 		l.println("setting workers to default value of 1")
 	}
-
-	defer func() {
-		if e != nil {
-			os.RemoveAll(l.Dir())
-		}
-	}()
 
 	err := l.setupTestEnv(ctx, now)
 	if err != nil {
@@ -85,11 +86,42 @@ func (l *Launcher) SetupFS(ctx context.Context, now time.Time) (e error) {
 	return nil
 }
 
+func (l *LauncherNarwhal) StartFrom(ctx context.Context, rootDir string) error {
+	l.status = "setup"
+	if narwhal := "narwhal"; filepath.Base(rootDir) != narwhal {
+		rootDir = filepath.Join(rootDir, narwhal)
+	}
+
+	l.dirs.rootDir = rootDir
+
+	nodeDirs, err := os.ReadDir(l.dirs.nodesDir())
+	if err != nil {
+		return err
+	}
+
+	l.committeeCFG, err = readCommitteeFile(l.dirs.committeeFile())
+	if err != nil {
+		return err
+	}
+
+	var nodeNames []string
+	for _, nodeDir := range nodeDirs {
+		nodeName, err := readNarwhalKeyFile(l.dirs.nodeKeyFile(nodeDir.Name()))
+		if err != nil {
+			return err
+		}
+		nodeNames = append(nodeNames, nodeName)
+	}
+	l.dirs.nodeNames = nodeNames
+
+	return l.Start(ctx)
+}
+
 // Start will start all the narwhal nodes. This will start up the nodes in separate
 // go routines. The context can be provided to control stopping the running cluster.
 // Additionally, calling Stop will also stop the cluster. When Start returns the nodes
 // are in fully operational.
-func (l *Launcher) Start(ctx context.Context) error {
+func (l *LauncherNarwhal) Start(ctx context.Context) error {
 	if l.status == "" {
 		return fmt.Errorf("the filesystem is not setup to run nodes; make sure to call SetupFS before running the nodes")
 	}
@@ -110,11 +142,11 @@ func (l *Launcher) Start(ctx context.Context) error {
 
 // NodeRuntimeErrs provides runtime errors encountered from running the narwhal nodes as
 // a daemon process.
-func (l *Launcher) NodeRuntimeErrs() <-chan error {
+func (l *LauncherNarwhal) NodeRuntimeErrs() <-chan error {
 	return l.runtimeErrStream
 }
 
-func (l *Launcher) runAllNodes(ctx context.Context) (<-chan error, error) {
+func (l *LauncherNarwhal) runAllNodes(ctx context.Context) (<-chan error, error) {
 	errStream := make(chan error)
 
 	readyMsgStream := make(chan readyMsg)
@@ -138,8 +170,8 @@ func (l *Launcher) runAllNodes(ctx context.Context) (<-chan error, error) {
 		}
 
 		// setup workers
-		for _, nodeName := range l.dirs.nodeNames {
-			for i := 0; i < workers; i++ {
+		for i := range l.dirs.nodeNames {
+			for j := 0; j < workers; j++ {
 				wg.Add(1)
 				go func(idx int, nName string) {
 					defer wg.Done()
@@ -148,7 +180,7 @@ func (l *Launcher) runAllNodes(ctx context.Context) (<-chan error, error) {
 					if err != nil && err != context.Canceled && !isSignalKilledErr(err) {
 						errStream <- err
 					}
-				}(i, nodeName)
+				}(j, l.dirs.nodeNames[i])
 			}
 		}
 		wg.Wait()
@@ -163,79 +195,44 @@ func (l *Launcher) runAllNodes(ctx context.Context) (<-chan error, error) {
 	return errStream, nil
 }
 
-func isSignalKilledErr(err error) bool {
-	if err == nil {
-		return false
+func (l *LauncherNarwhal) awaitStartup(ctx context.Context, readyMsgStream <-chan readyMsg) <-chan error {
+	nodes := make(map[string]struct{})
+	for nodeName, authCFG := range l.committeeCFG.Authorities {
+		nodes[nodeName] = struct{}{}
+		for workerID := range authCFG.Workers {
+			nodes[nodeName+"_worker_"+workerID] = struct{}{}
+		}
 	}
+	return awaitFn(ctx, readyMsgStream, func(msg readyMsg) (bool, error) {
+		key := msg.nodeName
+		if msg.nodeType == "worker" && msg.workerID != "" {
+			key += "_worker_" + msg.workerID
+		}
+		delete(nodes, key)
 
-	return strings.Contains(err.Error(), "signal: killed")
+		var err error
+		if msg.status != "ready" {
+			var workerDesc string
+			if msg.nodeType == "worker" {
+				workerDesc = fmt.Sprintf(" worker(%s)", msg.workerID)
+			}
+
+			label := msg.nodeType
+			if label == "worker" {
+				label = "worker_" + msg.workerID
+			}
+			logFile := l.dirs.nodeLogFile(msg.nodeName, label)
+			err = fmt.Errorf("failed start for narwhal node(%s)%s: see %s for logs", msg.nodeName, workerDesc, logFile)
+		}
+
+		return len(nodes) == 0, err
+	})
 }
 
-func (l *Launcher) awaitStartup(ctx context.Context, readyMsgStream <-chan readyMsg) <-chan error {
-	startupCompleteStream := make(chan error)
-	go func() {
-		var startupErrs []error
-		defer func() {
-			if len(startupErrs) > 0 {
-				startupCompleteStream <- newMultiErr("failed to startup narwhal_node(s)", startupErrs)
-			}
-			close(startupCompleteStream)
-		}()
-
-		nodes := make(map[string]struct{})
-		for nodeName, authCFG := range l.committeeCFG.Authorities {
-			nodes[nodeName] = struct{}{}
-			for workerID := range authCFG.Workers {
-				nodes[nodeName+"_worker_"+workerID] = struct{}{}
-			}
-		}
-
-		for {
-			select {
-			case <-ctx.Done():
-			case msg := <-readyMsgStream:
-				key := msg.nodeName
-				if msg.nodeType == "worker" && msg.workerID != "" {
-					key += "_worker_" + msg.workerID
-				}
-				delete(nodes, key)
-
-				if msg.status != "ready" {
-					var workerDesc string
-					if msg.nodeType == "worker" {
-						workerDesc = fmt.Sprintf(" worker(%s)", msg.workerID)
-					}
-
-					label := msg.nodeType
-					if label == "worker" {
-						label = "worker_" + msg.workerID
-					}
-					logFile := l.dirs.nodeLogFile(msg.nodeName, label)
-					err := fmt.Errorf("failed start for node(%s)%s: see %s for logs", msg.nodeName, workerDesc, logFile)
-					startupErrs = append(startupErrs, err)
-				}
-				if len(nodes) == 0 {
-					return
-				}
-			}
-		}
-	}()
-
-	return startupCompleteStream
-}
-
-func (l *Launcher) setupTestEnv(ctx context.Context, now time.Time) (e error) {
-	testingDir := filepath.Join(os.ExpandEnv("$PWD/test_results"), strings.ReplaceAll(now.Format(time.Stamp), " ", "-"))
-
-	l.dirs = testDirs{
-		rootDir: testingDir,
-	}
-
-	for _, subDir := range []string{l.dirs.nodesDir()} {
-		err := os.MkdirAll(subDir, os.ModePerm)
-		if err != nil {
-			return fmt.Errorf("failed to create subdir %s: %w", subDir, err)
-		}
+func (l *LauncherNarwhal) setupTestEnv(ctx context.Context, now time.Time) (e error) {
+	l.dirs = newTestResultsDir(now, "narwhal")
+	if err := createDirs(l.dirs.nodesDir()); err != nil {
+		return err
 	}
 
 	nodeNames, err := setupNodes(ctx, l.dirs, l.Primaries)
@@ -263,10 +260,10 @@ func (l *Launcher) setupTestEnv(ctx context.Context, now time.Time) (e error) {
 	return nil
 }
 
-func (l *Launcher) writeParameterFiles() error {
+func (l *LauncherNarwhal) writeParameterFiles() error {
 	for nodeName, auth := range l.committeeCFG.Authorities {
 		paramFile := l.dirs.nodeParameterFile(nodeName)
-		err := writeParametersFile(paramFile, string(auth.Primary.GRPC))
+		err := writeParametersFile(paramFile, string(auth.Primary.GRPC), l.BatchSize, l.HeaderSize)
 		if err != nil {
 			return fmt.Errorf("failed to write parameters file(%s): %w", paramFile, err)
 		}
@@ -274,54 +271,17 @@ func (l *Launcher) writeParameterFiles() error {
 	return nil
 }
 
-func (l *Launcher) println(format string, args ...interface{}) {
+func (l *LauncherNarwhal) println(format string, args ...interface{}) {
 	if l.Out == nil {
 		return
 	}
 	fmt.Fprintln(l.Out, append([]interface{}{format}, args...)...)
 }
 
-type testDirs struct {
-	rootDir   string
-	nodeNames []string
-}
-
-func (t testDirs) committeeFile() string {
-	return filepath.Join(t.rootDir, "committee.json")
-}
-
-func (t testDirs) nodesDir() string {
-	return filepath.Join(t.rootDir, "nodes")
-}
-
-func (t testDirs) nodeDir(nodeName string) string {
-	return filepath.Clean(filepath.Join(t.nodesDir(), strings.ReplaceAll(nodeName, "/", "_")))
-}
-
-func (t testDirs) nodeDBDir(nodeName, label string) string {
-	return filepath.Join(t.nodeDir(nodeName), "dbs", label)
-}
-
-func (t testDirs) nodeKeyFile(nodeName string) string {
-	return filepath.Join(t.nodeDir(nodeName), "key.json")
-}
-
-func (t testDirs) nodeLogDir(nodeName string) string {
-	return filepath.Join(t.nodeDir(nodeName), "logs")
-}
-
-func (t testDirs) nodeLogFile(nodeName, label string) string {
-	return filepath.Join(t.nodeLogDir(nodeName), label)
-}
-
-func (t testDirs) nodeParameterFile(nodeName string) string {
-	return filepath.Join(t.nodeDir(nodeName), "parameters.json")
-}
-
 func runPrimary(ctx context.Context, readyStream chan<- readyMsg, dirs testDirs, nodeName string) error {
 	label := "primary"
 
-	readyTailer := newReadyTailWriter(ctx, readyStream, "primary", nodeName, "")
+	readyTailer := newNarwhalReadyWriter(ctx, readyStream, "primary", nodeName, "")
 	err := runNodeExecCmd(ctx, readyTailer, dirs, nodeName, label, "primary", "--consensus-disabled")
 	if err != nil {
 		return fmt.Errorf("node %s encountered runtime error: %w", nodeName, err)
@@ -332,7 +292,7 @@ func runPrimary(ctx context.Context, readyStream chan<- readyMsg, dirs testDirs,
 func runWorker(ctx context.Context, readyStream chan<- readyMsg, dirs testDirs, nodeName string, workerID string) error {
 	label := "worker_" + workerID
 
-	readyTailer := newReadyTailWriter(ctx, readyStream, "worker", nodeName, workerID)
+	readyTailer := newNarwhalReadyWriter(ctx, readyStream, "worker", nodeName, workerID)
 	err := runNodeExecCmd(ctx, readyTailer, dirs, nodeName, label, "worker", "--id", workerID)
 	if err != nil {
 		return fmt.Errorf("node %s worker %s encountered runtime error: %w", nodeName, workerID, err)
@@ -341,11 +301,11 @@ func runWorker(ctx context.Context, readyStream chan<- readyMsg, dirs testDirs, 
 }
 
 func runNodeExecCmd(ctx context.Context, readyTailer io.Writer, dirs testDirs, nodeName, label string, subCmd string, subCmdArgs ...string) error {
-	f, err := os.Create(dirs.nodeLogFile(nodeName, label))
+	f, closeFn, err := newLogFileWriter(dirs.nodeLogFile(nodeName, label))
 	if err != nil {
 		return fmt.Errorf("failed to create log file for node %s: %w", nodeName, err)
 	}
-	defer f.Close()
+	defer closeFn()
 
 	// the argument/flag intertwining is required by the node cli
 	args := []string{
@@ -382,7 +342,7 @@ func setupNodeDir(ctx context.Context, testDir testDirs) (string, error) {
 		return "", fmt.Errorf("failed to create new key file: %w", err)
 	}
 
-	err = os.MkdirAll(testDir.nodeLogDir(nodeName), os.ModePerm)
+	err = createDirs(testDir.nodeLogDir(nodeName))
 	if err != nil {
 		return "", fmt.Errorf("failed to create log dir for node %s: %w", nodeName, err)
 	}
@@ -412,7 +372,7 @@ func newKeyFile(ctx context.Context, testDir testDirs) (string, error) {
 	}
 
 	nodeDir := testDir.nodeDir(keyFile.Name)
-	err = os.MkdirAll(nodeDir, os.ModePerm)
+	err = createDirs(nodeDir)
 	if err != nil {
 		return "", fmt.Errorf("failed to create %s dir: %w", nodeDir, err)
 	}
@@ -540,11 +500,11 @@ func newWorkerCFG(portFact *portFactory, host string) (WorkerCFG, error) {
 	return cfg, nil
 }
 
-func writeParametersFile(filename string, grpcAddr string) error {
+func writeParametersFile(filename, grpcAddr string, batchSize, headerSize int) error {
 	// contents pulled from mystenlabs/narwhal demo
 	tmpl := `
 {
-    "batch_size": 500,
+    "batch_size": %d,
     "block_synchronizer": {
         "certificates_synchronize_timeout": "2_000ms",
         "handler_certificate_deliver_timeout": "2_000ms",
@@ -557,7 +517,7 @@ func writeParametersFile(filename string, grpcAddr string) error {
         "socket_addr": "%s"
     },
     "gc_depth": 50,
-    "header_size": 250,
+    "header_size": %d,
     "max_batch_delay": "200ms",
     "max_concurrent_requests": 500000,
     "max_header_delay": "500ms",
@@ -567,8 +527,24 @@ func writeParametersFile(filename string, grpcAddr string) error {
     "sync_retry_delay": "10_000ms",
     "sync_retry_nodes": 3
 }`
-	contents := fmt.Sprintf(tmpl, grpcAddr)
+	contents := fmt.Sprintf(tmpl, batchSize, grpcAddr, headerSize)
 	return os.WriteFile(filename, []byte(contents), os.ModePerm)
+}
+
+func readNarwhalKeyFile(filename string) (string, error) {
+	bb, err := os.ReadFile(filename)
+	if err != nil {
+		return "", err
+	}
+
+	var keyFile struct {
+		Name string `json:"name"`
+	}
+	err = json.Unmarshal(bb, &keyFile)
+	if err != nil {
+		return "", err
+	}
+	return keyFile.Name, nil
 }
 
 func newNarwhalMultiAddr(host, port string) Multiaddr {
@@ -581,114 +557,46 @@ var (
 	failedStart      = []byte("Caused by")
 )
 
-type readyMsg struct {
-	nodeType string
-	nodeName string
-	workerID string
-	status   string
-}
-
-type readyTailWriter struct {
-	nodeType string
-	nodeName string
-	workerID string
-
-	done        <-chan struct{}
-	readyStream chan<- readyMsg
-	status      string
-}
-
-func newReadyTailWriter(ctx context.Context, readyStream chan<- readyMsg, nodeType, nodeName, workerID string) *readyTailWriter {
-	return &readyTailWriter{
-		nodeType:    nodeType,
-		nodeName:    nodeName,
-		workerID:    workerID,
-		done:        ctx.Done(),
-		readyStream: readyStream,
-	}
-}
-
-func (r *readyTailWriter) Write(b []byte) (n int, err error) {
-	if r.status != "" {
-		return io.Discard.Write(b)
-	}
-
+func narwhalLineCheckFn(b []byte, nodeType string) string {
 	isFailedStart := bytes.Contains(b, failedStart)
 
-	isReady := r.nodeType == "primary" && bytes.Contains(b, primaryGRPCReady) ||
-		r.nodeType == "primary" && bytes.Contains(b, narwhalNodeReady) ||
-		r.nodeType == "worker" && bytes.Contains(b, narwhalNodeReady)
+	isReady := nodeType == "primary" && bytes.Contains(b, primaryGRPCReady) ||
+		nodeType == "primary" && bytes.Contains(b, narwhalNodeReady) ||
+		nodeType == "worker" && bytes.Contains(b, narwhalNodeReady)
 
+	var status string
 	switch {
 	case isReady:
-		r.status = "ready"
+		status = "ready"
 	case isFailedStart:
-		r.status = "failed start"
+		status = "failed start"
 	}
-	if r.status != "" {
-		r.sendReady()
-	}
-
-	return io.Discard.Write(b)
+	return status
 }
 
-func (r *readyTailWriter) sendReady() {
-	msg := readyMsg{
-		nodeType: r.nodeType,
-		nodeName: r.nodeName,
-		workerID: r.workerID,
-		status:   r.status,
-	}
+func newNarwhalReadyWriter(ctx context.Context, stream chan<- readyMsg, nodeType, nodeName, workerID string) *readyTailWriter {
+	return newReadyTailWriter(ctx, stream, nodeType, nodeName, workerID, narwhalLineCheckFn)
 
-	select {
-	case <-r.done:
-	case r.readyStream <- msg:
-	}
 }
 
-type portFactory struct {
-	closers []io.Closer
-}
-
-func (p *portFactory) newRandomPorts(numPorts int, host string) ([]string, error) {
-	ports := make([]string, 0, numPorts)
-	for i := 0; i < numPorts; i++ {
-		port, err := p.newRandomPort(host)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get host random port: %w", err)
-		}
-		ports = append(ports, port)
-	}
-	return ports, nil
-}
-
-func (p *portFactory) newRandomPort(host string) (string, error) {
-	listener, err := net.Listen("tcp", host+":0")
+func readCommitteeFile(filename string) (committeeCFG, error) {
+	bb, err := os.ReadFile(filename)
 	if err != nil {
-		return "", fmt.Errorf("failed to take random port: %w", err)
+		return committeeCFG{}, err
 	}
-	// do not close here, so we don't accidentally get same ports across the bunch
-	addr := listener.Addr().String() // form of: 127.0.0.1:48013
 
-	p.closers = append(p.closers, listener)
-	return strings.SplitAfter(addr, ":")[1], nil
+	var committee committeeCFG
+	err = json.Unmarshal(bb, &committee)
+	if err != nil {
+		return committeeCFG{}, err
+	}
+	return committee, nil
 }
 
-func (p *portFactory) close() {
-	for _, cl := range p.closers {
-		_ = cl.Close()
-	}
-}
-
-func newMultiErr(msg string, errs []error) error {
-	if len(errs) == 0 {
-		return nil
+func isSignalKilledErr(err error) bool {
+	if err == nil {
+		return false
 	}
 
-	errMsgs := make([]string, 0, len(errs))
-	for _, e := range errs {
-		errMsgs = append(errMsgs, e.Error())
-	}
-
-	return fmt.Errorf("%s:\n\t%s", msg, strings.Join(errMsgs, "\n\t* "))
+	return strings.Contains(err.Error(), "signal: killed")
 }

@@ -42,12 +42,11 @@ func TestNarwhalPool(t *testing.T) {
 	abciC.SetLogger(logger)
 	require.NoError(t, abciC.Start())
 
-	l := narwhalmint.Launcher{
-		BlockSizeLimitBytes: 150 * kilobyte,
-		Host:                "127.0.0.1",
-		Primaries:           4,
-		Workers:             1,
-		Out:                 os.Stdout,
+	l := narwhalmint.LauncherNarwhal{
+		Host:      "127.0.0.1",
+		Primaries: 4,
+		Workers:   1,
+		Out:       os.Stdout,
 	}
 
 	t.Log("setting up filesystem...")
@@ -98,14 +97,6 @@ func TestNarwhalPool(t *testing.T) {
 		t.Logf("reaping mp[%d]", i)
 		runner.reapTxs(ctx, mpABCIs[i], mempool.ReapBytes(maxBytes))
 	}
-	for i := range mpABCIs {
-		t.Logf("reaping mp[%d]", i)
-		runner.reapTxs(ctx, mpABCIs[i], mempool.ReapTxs(15))
-	}
-	for i := range mpABCIs {
-		t.Logf("reaping mp[%d]", i)
-		runner.reapTxs(ctx, mpABCIs[i], mempool.ReapGas(1000))
-	}
 	consensusBlock := runner.reapTxs(ctx, mpABCIs[0], mempool.ReapBytes(maxBytes))
 
 	finishFn, err := mpABCIs[0].PrepBlockFinality(ctx)
@@ -114,6 +105,11 @@ func TestNarwhalPool(t *testing.T) {
 
 	err = mpABCIs[0].AfterBlockFinality(ctx, consensusBlock, nil, nil, nil)
 	require.NoError(t, err)
+
+	cancel()
+	for err := range l.NodeRuntimeErrs() {
+		t.Log("runtime err: ", err)
+	}
 }
 
 type reapTracker struct {
@@ -246,7 +242,7 @@ func (t txStats) getUnreapedTx(i int) string {
 	return t.UnreapedTxs[i]
 }
 
-func wait(t *testing.T, secs int, details string) {
+func wait(t testing.TB, secs int, details string) {
 	t.Helper()
 	dur := time.Duration(secs) * time.Second
 	t.Logf("waiting %s for %s", dur.String(), details)

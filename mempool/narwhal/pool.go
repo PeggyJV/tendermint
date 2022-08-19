@@ -46,7 +46,7 @@ type Pool struct {
 
 var _ mempool.Pool = (*Pool)(nil)
 
-func New(ctx context.Context, cfg config.NarwhalMempoolConfig, opts ...PoolOption) (*Pool, error) {
+func New(ctx context.Context, cfg *config.NarwhalMempoolConfig, opts ...PoolOption) (*Pool, error) {
 	var workersC []*narwhalc.WorkerClient
 	for _, wCFG := range cfg.Workers {
 		workerC, err := narwhalc.NewWorkerClient(ctx, wCFG.Addr, wCFG.Name)
