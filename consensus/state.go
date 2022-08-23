@@ -2,6 +2,7 @@ package consensus
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io/ioutil"
@@ -831,6 +832,13 @@ func (cs *State) handleMsg(mi msgInfo) {
 				"block_round", msg.Round,
 			)
 			err = nil
+		} else if err != nil {
+			cs.Logger.Error("failed to all proposal block part",
+				"err", err,
+				"height", cs.Height,
+				"cs_round", cs.Round,
+				"block_round", msg.Round,
+			)
 		}
 
 	case *VoteMessage:
@@ -1583,7 +1591,20 @@ func (cs *State) finalizeCommit(height int64) {
 		panic("cannot finalize commit; proposal block does not hash to commit hash")
 	}
 
-	if err := cs.blockExec.ValidateBlock(cs.state, block); err != nil {
+	// TODO(berg): if we've gotten this far, we have validated we have received the same block.
+	//			   However, note that in the case of the traditional workflow, we are sending the
+	//			   block parts that included the txs. With narwhal and its kin however.... that
+	//			   is no longer the case. We need to "hydrate" (i.e. add the txs that are represented
+	//			   within the collections) before we apply it.
+	block, blockParts, err := cs.blockExec.HydrateBlockCopy(context.TODO(), block)
+	if err != nil {
+		// TODO(berg): we need to be able to handle this gracefully without panicing... perhaps we
+		//			   add some retries and if we exhaust all the retries, then we go boom?
+		panic("failed to hydrate block: " + err.Error())
+	}
+
+	err = cs.blockExec.ValidateBlock(cs.state, block)
+	if err != nil {
 		panic(fmt.Errorf("+2/3 committed an invalid block: %w", err))
 	}
 
@@ -1603,6 +1624,7 @@ func (cs *State) finalizeCommit(height int64) {
 		// but may differ from the LastCommit included in the next block
 		precommits := cs.Votes.Precommits(cs.CommitRound)
 		seenCommit := precommits.MakeCommit()
+
 		cs.blockStore.SaveBlock(block, blockParts, seenCommit)
 	} else {
 		// Happens during replay if we already saved the block but didn't commit
@@ -1639,15 +1661,14 @@ func (cs *State) finalizeCommit(height int64) {
 
 	// Execute and commit the block, update and save the state, and update the mempool.
 	// NOTE The block.AppHash wont reflect these txs until the next block.
-	var (
-		err          error
-		retainHeight int64
-	)
+	var retainHeight int64
 
 	stateCopy, retainHeight, err = cs.blockExec.ApplyBlock(
 		stateCopy,
 		types.BlockID{
-			Hash:          block.Hash(),
+			Hash: block.Hash(),
+			// the Block ID is now different, b/c the partset has changed from what was gossiped over consensus
+			// now that we have hydrated it with the txs.
 			PartSetHeader: blockParts.Header(),
 		},
 		block,
@@ -1892,7 +1913,7 @@ func (cs *State) addProposalBlockPart(msg *BlockPartMessage, peerID p2p.ID) (add
 		cs.ProposalBlock = block
 
 		// NOTE: it's possible to receive complete proposal blocks for future rounds without having the proposal
-		cs.Logger.Info("received complete proposal block", "height", cs.ProposalBlock.Height, "hash", cs.ProposalBlock.Hash())
+		cs.Logger.Info("received complete proposal block", "height", cs.ProposalBlock.Height, "hash", cs.ProposalBlock.Hash(), "num_txs", len(cs.ProposalBlock.Txs))
 
 		if err := cs.eventBus.PublishEventCompleteProposal(cs.CompleteProposalEvent()); err != nil {
 			cs.Logger.Error("failed publishing event complete proposal", "err", err)

@@ -1007,6 +1007,9 @@ func (data *Data) Hash() tmbytes.HexBytes {
 	if data == nil {
 		return (Txs{}).Hash()
 	}
+	if data.hash == nil && data.Collections != nil {
+		data.hash = data.Collections.Hash()
+	}
 	if data.hash == nil {
 		data.hash = data.Txs.Hash() // NOTE: leaves of merkle tree are TxIDs
 	}

@@ -109,11 +109,16 @@ func Test_TM_Narwhal(t *testing.T) {
 
 	start := time.Now()
 
-	_, ltm := startDefaultNarwhalTMNodes(ctx, t, narwhalTMOpts{Start: start})
+	_, ltm := startDefaultNarwhalTMNodes(ctx, t, narwhalTMOpts{
+		BatchSize:    5000,
+		HeaderSize:   300,
+		ProxyAppType: "kvstore",
+		Start:        start,
+	})
 
 	clients := ltm.Clients()
 
-	runner := newTMClientRunner(clients, 400000, 100)
+	runner := newTMClientRunner(clients, 200000, 50)
 	defer func() {
 		runner.printRunStats(t)
 		writeTestStats(t, narwhalmint.TestDir(start), start, runner.runtimeStats())
@@ -121,6 +126,8 @@ func Test_TM_Narwhal(t *testing.T) {
 
 	t.Log(nowTS(), "submitting client Txs: max_txs=", runner.maxTxs, " max_concurrent=", runner.maxConcurrent, " txs/client: ", runner.totalTxsPerClient)
 	done := runner.submitClientTMTxs(ctx)
+
+DONE:
 	for {
 		select {
 		case <-ctx.Done():
@@ -129,7 +136,43 @@ func Test_TM_Narwhal(t *testing.T) {
 			runner.printSyncInfo(ctx, t)
 		case <-done:
 			runner.printSyncInfo(ctx, t)
-			return
+			break DONE
+		}
+	}
+
+	for _, info := range runner.nodeStatuses(ctx) {
+		if info.err != nil {
+			t.Logf("error obtaining sync info for %s: %s", info.name, info.err)
+			continue
+		}
+		t.Log(info.name)
+		cl := findClientByName(info.name, clients)
+		si := info.status.SyncInfo
+		for i := si.EarliestBlockHeight; i <= si.LatestBlockHeight; i++ {
+			block, err := cl.Block(ctx, &i)
+			require.NoError(t, err)
+			require.NotNil(t, block.Block)
+			txs := block.Block.Txs
+			colls := block.Block.Collections
+
+			collCount := 0
+			if colls != nil {
+				collCount += 1 + len(colls.ExtraCollections)
+			}
+
+			t.Logf("  height %d for block %s has %d txs and %d collections", i, block.BlockID, len(txs), collCount)
+			t.Logf("\tblock header: %#v", block.Block.Header)
+			if len(txs) == 0 {
+				continue
+			}
+			showTxs := txs
+			if len(txs) > 5 {
+				showTxs = showTxs[:5]
+			}
+			t.Logf("\tshowing %d of %d total txs", len(showTxs), len(txs))
+			for _, tx := range showTxs {
+				t.Logf("\ttx:\t%s", string(tx))
+			}
 		}
 	}
 }
@@ -248,6 +291,34 @@ func startDefaultTMNodes(ctx context.Context, tb testing.TB, narwhalCFGs []*conf
 	return &ltm
 }
 
+type clientErrs struct {
+	name  string
+	errs  map[string]int
+	total int
+}
+
+func (c *clientErrs) errMsgs() []string {
+	out := make([]string, 0, len(c.errs))
+	for errMsg, count := range c.errs {
+		out = append(out, fmt.Sprintf("count: %d\terr: %s", count, errMsg))
+	}
+	errCount := func(in string) (int, string) {
+		parts := strings.SplitN(in, "\t", 2)
+		rawCount := strings.TrimPrefix(parts[0], "count: ")
+		i, _ := strconv.Atoi(rawCount)
+		return i, parts[1]
+	}
+	sort.Slice(out, func(i, j int) bool {
+		iCount, iErr := errCount(out[i])
+		jCount, jErr := errCount(out[j])
+		if iCount == jCount {
+			return iErr < jErr
+		}
+		return iCount < jCount
+	})
+	return out
+}
+
 type clientMsg struct {
 	curTx  int
 	name   string
@@ -281,34 +352,6 @@ func newTMClientRunner(clients []*narwhalmint.TMClient, maxTxs, maxConcurrent in
 		clients:           clients,
 		mStats:            mStats,
 	}
-}
-
-type clientErrs struct {
-	name  string
-	errs  map[string]int
-	total int
-}
-
-func (c *clientErrs) errMsgs() []string {
-	out := make([]string, 0, len(c.errs))
-	for errMsg, count := range c.errs {
-		out = append(out, fmt.Sprintf("count: %d\terr: %s", count, errMsg))
-	}
-	errCount := func(in string) (int, string) {
-		parts := strings.SplitN(in, "\t", 2)
-		rawCount := strings.TrimPrefix(parts[0], "count: ")
-		i, _ := strconv.Atoi(rawCount)
-		return i, parts[1]
-	}
-	sort.Slice(out, func(i, j int) bool {
-		iCount, iErr := errCount(out[i])
-		jCount, jErr := errCount(out[j])
-		if iCount == jCount {
-			return iErr < jErr
-		}
-		return iCount < jCount
-	})
-	return out
 }
 
 func (r *tmClientRunner) errs() (map[string]clientErrs, int) {
@@ -633,6 +676,15 @@ func writeTestStats(tb testing.TB, testdir string, start time.Time, stats testSt
 	enc := json.NewEncoder(f)
 	enc.SetIndent("", "  ")
 	require.NoError(tb, enc.Encode(stats))
+}
+
+func findClientByName(name string, clients []*narwhalmint.TMClient) *narwhalmint.TMClient {
+	for _, cl := range clients {
+		if cl.NodeName == name {
+			return cl
+		}
+	}
+	return nil
 }
 
 func nowTS() string {

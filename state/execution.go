@@ -148,6 +148,16 @@ func (blockExec *BlockExecutor) ValidateBlock(state State, block *types.Block) e
 	return blockExec.evpool.CheckEvidence(block.Evidence.Evidence)
 }
 
+// HydrateBlockCopy will copy the provided block and add any additional data/behavior not present
+// in the block proposal that is gossiped, but is needed for applying the block.
+func (blockExec *BlockExecutor) HydrateBlockCopy(ctx context.Context, block *types.Block) (*types.Block, *types.PartSet, error) {
+	block, err := blockExec.mempool.NewHydratedBlock(ctx, block)
+	if err != nil {
+		return nil, nil, err
+	}
+	return block, block.MakePartSet(types.BlockPartSizeBytes), nil
+}
+
 // ApplyBlock validates the block against the state, executes it against the app,
 // fires the relevant events, commits the app, and saves the new state and responses.
 // It returns the new state and the block height to retain (pruning older blocks).
@@ -161,15 +171,9 @@ func (blockExec *BlockExecutor) ApplyBlock(
 		return state, 0, ErrInvalidBlock(err)
 	}
 
-	ctx := context.TODO()
-	hydratedBlock, err := blockExec.mempool.NewHydratedBlock(ctx, block)
-	if err != nil {
-		return state, 0, err
-	}
-
 	startTime := time.Now().UnixNano()
 	abciResponses, err := execBlockOnProxyApp(
-		blockExec.logger, blockExec.proxyApp, hydratedBlock, blockExec.store, state.InitialHeight,
+		blockExec.logger, blockExec.proxyApp, block, blockExec.store, state.InitialHeight,
 	)
 	endTime := time.Now().UnixNano()
 	blockExec.metrics.BlockProcessingTime.Observe(float64(endTime-startTime) / 1000000)
@@ -180,7 +184,7 @@ func (blockExec *BlockExecutor) ApplyBlock(
 	fail.Fail() // XXX
 
 	// Save the results before we commit.
-	if err := blockExec.store.SaveABCIResponses(hydratedBlock.Height, abciResponses); err != nil {
+	if err := blockExec.store.SaveABCIResponses(block.Height, abciResponses); err != nil {
 		return state, 0, err
 	}
 
@@ -202,19 +206,19 @@ func (blockExec *BlockExecutor) ApplyBlock(
 	}
 
 	// Update the state with the block and responses.
-	state, err = updateState(state, blockID, &hydratedBlock.Header, abciResponses, validatorUpdates)
+	state, err = updateState(state, blockID, &block.Header, abciResponses, validatorUpdates)
 	if err != nil {
 		return state, 0, fmt.Errorf("commit failed for application: %v", err)
 	}
 
 	// Lock mempool, commit app state, update mempoool.
-	appHash, retainHeight, err := blockExec.Commit(state, hydratedBlock, abciResponses.DeliverTxs)
+	appHash, retainHeight, err := blockExec.Commit(state, block, abciResponses.DeliverTxs)
 	if err != nil {
 		return state, 0, fmt.Errorf("commit failed for application: %v", err)
 	}
 
 	// Update evpool with the latest state.
-	blockExec.evpool.Update(state, hydratedBlock.Evidence.Evidence)
+	blockExec.evpool.Update(state, block.Evidence.Evidence)
 
 	fail.Fail() // XXX
 
@@ -228,7 +232,7 @@ func (blockExec *BlockExecutor) ApplyBlock(
 
 	// Events are fired after everything else.
 	// NOTE: if we crash between Commit and Save, events wont be fired during replay
-	fireEvents(blockExec.logger, blockExec.eventBus, hydratedBlock, abciResponses, validatorUpdates)
+	fireEvents(blockExec.logger, blockExec.eventBus, block, abciResponses, validatorUpdates)
 
 	return state, retainHeight, nil
 }
