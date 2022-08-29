@@ -85,19 +85,20 @@ func MakeVote(
 // computed from itself.
 // It populates the same set of fields validated by ValidateBasic.
 func MakeBlock(height int64, txs []Tx, lastCommit *Commit, evidence []Evidence) *Block {
-	return MakeBlockV2(height, Data{Txs: txs}, lastCommit, evidence)
+	return MakeBlockV2(height, txs, lastCommit, evidence, nil)
 }
 
 // MakeBlockV2 returns a new block with an empty header, except what can be
 // computed from itself.
 // It populates the same set of fields validated by ValidateBasic.
-func MakeBlockV2(height int64, data Data, lastCommit *Commit, evidence []Evidence) *Block {
+func MakeBlockV2(height int64, txs []Tx, lastCommit *Commit, evidence []Evidence, colls *DAGCollections) *Block {
 	block := &Block{
 		Header: Header{
-			Version: tmversion.Consensus{Block: version.BlockProtocol, App: 0},
-			Height:  height,
+			Version:     tmversion.Consensus{Block: version.BlockProtocol, App: 0},
+			Height:      height,
+			Collections: colls,
 		},
-		Data:       data,
+		Data:       Data{Txs: txs},
 		Evidence:   EvidenceData{Evidence: evidence},
 		LastCommit: lastCommit,
 	}

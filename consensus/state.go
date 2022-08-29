@@ -2,7 +2,6 @@ package consensus
 
 import (
 	"bytes"
-	"context"
 	"errors"
 	"fmt"
 	"io/ioutil"
@@ -457,40 +456,31 @@ func (cs *State) OpenWAL(walFile string) (WAL, error) {
 
 // AddVote inputs a vote.
 func (cs *State) AddVote(vote *types.Vote, peerID p2p.ID) (added bool, err error) {
-	if peerID == "" {
-		cs.internalMsgQueue <- msgInfo{&VoteMessage{vote}, ""}
-	} else {
-		cs.peerMsgQueue <- msgInfo{&VoteMessage{vote}, peerID}
-	}
-
+	cs.sendMsgInfo(msgInfo{&VoteMessage{vote}, peerID})
 	// TODO: wait for event?!
 	return false, nil
 }
 
 // SetProposal inputs a proposal.
 func (cs *State) SetProposal(proposal *types.Proposal, peerID p2p.ID) error {
-
-	if peerID == "" {
-		cs.internalMsgQueue <- msgInfo{&ProposalMessage{proposal}, ""}
-	} else {
-		cs.peerMsgQueue <- msgInfo{&ProposalMessage{proposal}, peerID}
-	}
-
+	cs.sendMsgInfo(msgInfo{&ProposalMessage{proposal}, peerID})
 	// TODO: wait for event?!
 	return nil
 }
 
 // AddProposalBlockPart inputs a part of the proposal block.
 func (cs *State) AddProposalBlockPart(height int64, round int32, part *types.Part, peerID p2p.ID) error {
-
-	if peerID == "" {
-		cs.internalMsgQueue <- msgInfo{&BlockPartMessage{height, round, part}, ""}
-	} else {
-		cs.peerMsgQueue <- msgInfo{&BlockPartMessage{height, round, part}, peerID}
-	}
-
+	cs.sendMsgInfo(msgInfo{&BlockPartMessage{height, round, part}, peerID})
 	// TODO: wait for event?!
 	return nil
+}
+
+func (cs *State) sendMsgInfo(msg msgInfo) {
+	queue := cs.internalMsgQueue
+	if msg.PeerID != "" {
+		queue = cs.peerMsgQueue
+	}
+	queue <- msg
 }
 
 // SetProposalAndBlock inputs the proposal and all block parts.
@@ -1113,8 +1103,10 @@ func (cs *State) isProposer(address []byte) bool {
 }
 
 func (cs *State) defaultDecideProposal(height int64, round int32) {
-	var block *types.Block
-	var blockParts *types.PartSet
+	var (
+		block      *types.Block
+		blockParts *types.PartSet
+	)
 
 	// Decide on block
 	if cs.ValidBlock != nil {
@@ -1591,19 +1583,7 @@ func (cs *State) finalizeCommit(height int64) {
 		panic("cannot finalize commit; proposal block does not hash to commit hash")
 	}
 
-	// TODO(berg): if we've gotten this far, we have validated we have received the same block.
-	//			   However, note that in the case of the traditional workflow, we are sending the
-	//			   block parts that included the txs. With narwhal and its kin however.... that
-	//			   is no longer the case. We need to "hydrate" (i.e. add the txs that are represented
-	//			   within the collections) before we apply it.
-	block, blockParts, err := cs.blockExec.HydrateBlockCopy(context.TODO(), block)
-	if err != nil {
-		// TODO(berg): we need to be able to handle this gracefully without panicing... perhaps we
-		//			   add some retries and if we exhaust all the retries, then we go boom?
-		panic("failed to hydrate block: " + err.Error())
-	}
-
-	err = cs.blockExec.ValidateBlock(cs.state, block)
+	err := cs.blockExec.ValidateBlock(cs.state, block)
 	if err != nil {
 		panic(fmt.Errorf("+2/3 committed an invalid block: %w", err))
 	}

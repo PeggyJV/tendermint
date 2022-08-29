@@ -324,10 +324,11 @@ func MaxDataBytesNoEvidence(maxBytes int64, valsCount int) int64 {
 // - https://github.com/tendermint/spec/blob/master/spec/blockchain/blockchain.md
 type Header struct {
 	// basic block info
-	Version tmversion.Consensus `json:"version"`
-	ChainID string              `json:"chain_id"`
-	Height  int64               `json:"height"`
-	Time    time.Time           `json:"time"`
+	Version     tmversion.Consensus `json:"version"`
+	ChainID     string              `json:"chain_id"`
+	Height      int64               `json:"height"`
+	Time        time.Time           `json:"time"`
+	Collections *DAGCollections     `json:"collections"`
 
 	// prev block info
 	LastBlockID BlockID `json:"last_block_id"`
@@ -456,7 +457,8 @@ func (h *Header) Hash() tmbytes.HexBytes {
 	if err != nil {
 		return nil
 	}
-	return merkle.HashFromByteSlices([][]byte{
+
+	in := [][]byte{
 		hbz,
 		cdcEncode(h.ChainID),
 		cdcEncode(h.Height),
@@ -471,7 +473,14 @@ func (h *Header) Hash() tmbytes.HexBytes {
 		cdcEncode(h.LastResultsHash),
 		cdcEncode(h.EvidenceHash),
 		cdcEncode(h.ProposerAddress),
-	})
+	}
+	if coll := h.Collections; coll != nil {
+		in = append(in, cdcEncode(coll.RootCollection))
+		for i := range coll.ExtraCollections {
+			in = append(in, cdcEncode(coll.ExtraCollections[i]))
+		}
+	}
+	return merkle.HashFromByteSlices(in)
 }
 
 // StringIndented returns an indented string representation of the header.
@@ -518,7 +527,7 @@ func (h *Header) ToProto() *tmproto.Header {
 		return nil
 	}
 
-	return &tmproto.Header{
+	header := &tmproto.Header{
 		Version:            h.Version,
 		ChainID:            h.ChainID,
 		Height:             h.Height,
@@ -534,6 +543,22 @@ func (h *Header) ToProto() *tmproto.Header {
 		LastCommitHash:     h.LastCommitHash,
 		ProposerAddress:    h.ProposerAddress,
 	}
+
+	collections := h.Collections
+	if collections == nil {
+		return header
+	}
+
+	header.RootCollection = collections.RootCollection
+	if len(collections.ExtraCollections) > 0 {
+		extraBzs := make([][]byte, len(collections.ExtraCollections))
+		for i := range collections.ExtraCollections {
+			extraBzs[i] = collections.ExtraCollections[i]
+		}
+		header.ExtraCollections = extraBzs
+	}
+
+	return header
 }
 
 // FromProto sets a protobuf Header to the given pointer.
@@ -565,6 +590,17 @@ func HeaderFromProto(ph *tmproto.Header) (Header, error) {
 	h.LastResultsHash = ph.LastResultsHash
 	h.LastCommitHash = ph.LastCommitHash
 	h.ProposerAddress = ph.ProposerAddress
+
+	if len(ph.RootCollection) > 0 {
+		colls := DAGCollections{
+			RootCollection:   ph.RootCollection,
+			ExtraCollections: make([]tmbytes.HexBytes, len(ph.ExtraCollections)),
+		}
+		for i := range ph.ExtraCollections {
+			colls.ExtraCollections[i] = ph.ExtraCollections[i]
+		}
+		h.Collections = &colls
+	}
 
 	return *h, h.ValidateBasic()
 }
@@ -996,8 +1032,6 @@ type Data struct {
 	// This means that block.AppHash does not include these txs.
 	Txs Txs `json:"txs"`
 
-	Collections *DAGCollections `json:"collections"`
-
 	// Volatile
 	hash tmbytes.HexBytes
 }
@@ -1006,9 +1040,6 @@ type Data struct {
 func (data *Data) Hash() tmbytes.HexBytes {
 	if data == nil {
 		return (Txs{}).Hash()
-	}
-	if data.hash == nil && data.Collections != nil {
-		data.hash = data.Collections.Hash()
 	}
 	if data.hash == nil {
 		data.hash = data.Txs.Hash() // NOTE: leaves of merkle tree are TxIDs
@@ -1048,20 +1079,6 @@ func (data *Data) ToProto() tmproto.Data {
 		tp.Txs = txBzs
 	}
 
-	collections := data.Collections
-	if collections == nil {
-		return *tp
-	}
-
-	tp.RootCollection = collections.RootCollection
-	if len(collections.ExtraCollections) > 0 {
-		extraBzs := make([][]byte, len(collections.ExtraCollections))
-		for i := range collections.ExtraCollections {
-			extraBzs[i] = collections.ExtraCollections[i]
-		}
-		tp.ExtraCollections = extraBzs
-	}
-
 	return *tp
 }
 
@@ -1081,21 +1098,6 @@ func DataFromProto(dp *tmproto.Data) (Data, error) {
 		data.Txs = txBzs
 	} else {
 		data.Txs = Txs{}
-	}
-
-	if len(dp.RootCollection) == 0 {
-		return *data, nil
-	}
-
-	data.Collections = &DAGCollections{
-		RootCollection: dp.RootCollection,
-	}
-	if extras := dp.ExtraCollections; len(extras) > 0 {
-		extraBzs := make([]tmbytes.HexBytes, len(dp.ExtraCollections))
-		for i := range extras {
-			extraBzs[i] = extras[i]
-		}
-		data.Collections.ExtraCollections = extraBzs
 	}
 
 	return *data, nil

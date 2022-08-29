@@ -146,18 +146,16 @@ func (r *reapTracker) reapTxs(ctx context.Context, mp *mempool.ABCI, opts ...mem
 
 	opt := mempool.CoalesceReapOpts(opts...)
 
-	blockData, err := mp.Reap(ctx, opts...)
+	reapRes, err := mp.Reap(ctx, opts...)
 	require.NoError(t, err)
 
-	collections := blockData.Collections
+	collections := reapRes.Collections
 	require.NotNil(t, collections)
 	t.Logf("collections: %+v", collections)
 
-	consensusBlock := &types.Block{Data: blockData}
-	hydratedBlock, err := mp.NewHydratedBlock(ctx, consensusBlock)
-	require.NoError(t, err)
+	consensusBlock := &types.Block{Header: types.Header{Collections: collections}}
 
-	txs := hydratedBlock.Txs
+	txs := reapRes.Txs
 	if len(txs) == 0 {
 		t.Log("reaped 0 txs")
 		return consensusBlock

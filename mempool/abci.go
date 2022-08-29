@@ -188,38 +188,6 @@ func (a *ABCI) Flush(ctx context.Context) error {
 	return a.pool.Flush(ctx)
 }
 
-// NewHydratedBlock returns a copy of the block passed in, dereferenced and returned with all
-// necessarily metadata that is missing. In the case of narwhal consensus, the block will
-// be hydrated with the txs. If an error encountered, will return nil for hydrated block.
-func (a *ABCI) NewHydratedBlock(ctx context.Context, block *types.Block) (*types.Block, error) {
-	blockCopy := types.Block{
-		Header: block.Header,
-		Data:   block.Data,
-		Evidence: types.EvidenceData{
-			Evidence: append([]types.Evidence{}, block.Evidence.Evidence...),
-		},
-	}
-	if block.LastCommit != nil {
-		lc := *block.LastCommit
-		blockCopy.LastCommit = &lc
-	}
-	// TODO(berg): can cache the results of NewHydratedBlock for a short period of time and return that
-	//			   hot if its called many times in quick procession. For now, we just do the lookup and
-	//			   take the hit. With narwhal this will be noticeable... A trivial implementation below.
-	// if data, ok := a.mHydratedData(block.DataHash.String()); ok {
-	// 	blockCopy.Data = data
-	// 	return &blockCopy, nil
-	// }
-
-	data, err := a.pool.HydratedBlockData(ctx, &blockCopy)
-	if err != nil {
-		return nil, err
-	}
-	blockCopy.Data = data
-
-	return &blockCopy, nil
-}
-
 // PoolMeta returns the metadata for the underlying pool implementation.
 func (a *ABCI) PoolMeta() PoolMeta {
 	return a.pool.Meta()
@@ -242,23 +210,23 @@ func (a *ABCI) PrepBlockFinality(_ context.Context) (func(), error) {
 }
 
 // Reap calls the underlying pool's Reap method with the given options.
-func (a *ABCI) Reap(ctx context.Context, opts ...ReapOptFn) (types.Data, error) {
+func (a *ABCI) Reap(ctx context.Context, opts ...ReapOptFn) (ReapResults, error) {
 	opt := CoalesceReapOpts(opts...)
-	data, err := a.pool.Reap(ctx, opt)
+	res, err := a.pool.Reap(ctx, opt)
 	if err != nil {
-		return types.Data{}, err
+		return ReapResults{}, err
 	}
 
 	if opt.Verify {
-		return a.verifyReaper(ctx, data)
+		return a.verifyReaper(ctx, res)
 	}
 
-	return data, nil
+	return res, nil
 }
 
-func (a *ABCI) verifyReaper(ctx context.Context, data types.Data) (types.Data, error) {
+func (a *ABCI) verifyReaper(ctx context.Context, res ReapResults) (ReapResults, error) {
 	// TODO(berg): wire this up, for now just a no op, all txs are good...
-	return data, nil
+	return res, nil
 }
 
 // Remove removes txs from the cache and underlying pool.

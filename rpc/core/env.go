@@ -75,7 +75,7 @@ type Mempool interface {
 	CheckTx(ctx context.Context, tx types.Tx, callback func(*abci.Response), txInfo mempl.TxInfo) error
 	Flush(ctx context.Context) error
 	PoolMeta() mempl.PoolMeta
-	Reap(ctx context.Context, opts ...mempl.ReapOptFn) (types.Data, error)
+	Reap(ctx context.Context, opts ...mempl.ReapOptFn) (mempl.ReapResults, error)
 }
 
 //----------------------------------------------

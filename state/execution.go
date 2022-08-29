@@ -25,9 +25,8 @@ type Mempool interface {
 		newPreFn mempl.PreCheckFunc,
 		newPostFn mempl.PostCheckFunc,
 	) error
-	NewHydratedBlock(ctx context.Context, block *types.Block) (*types.Block, error)
 	PrepBlockFinality(_ context.Context) (func(), error)
-	Reap(ctx context.Context, opts ...mempl.ReapOptFn) (types.Data, error)
+	Reap(ctx context.Context, opts ...mempl.ReapOptFn) (mempl.ReapResults, error)
 }
 
 // -----------------------------------------------------------------------------
@@ -119,7 +118,7 @@ func (blockExec *BlockExecutor) CreateProposalBlock(
 	// Fetch a limited amount of valid txs
 	maxDataBytes := types.MaxDataBytes(maxBytes, evSize, state.Validators.Size())
 
-	data, err := blockExec.mempool.Reap(ctx,
+	reap, err := blockExec.mempool.Reap(ctx,
 		mempl.ReapBytes(maxDataBytes),
 		mempl.ReapGas(maxGas),
 		// TODO(berg): we can do the verification as an option to the Reap. This is actually pretty
@@ -132,7 +131,7 @@ func (blockExec *BlockExecutor) CreateProposalBlock(
 		return nil, nil, err
 	}
 
-	bl, ps := state.MakeBlockV2(height, data, commit, evidence, proposerAddr)
+	bl, ps := state.MakeBlockV2(height, reap.Txs, commit, evidence, proposerAddr, reap.Collections)
 	return bl, ps, nil
 }
 
@@ -146,16 +145,6 @@ func (blockExec *BlockExecutor) ValidateBlock(state State, block *types.Block) e
 		return err
 	}
 	return blockExec.evpool.CheckEvidence(block.Evidence.Evidence)
-}
-
-// HydrateBlockCopy will copy the provided block and add any additional data/behavior not present
-// in the block proposal that is gossiped, but is needed for applying the block.
-func (blockExec *BlockExecutor) HydrateBlockCopy(ctx context.Context, block *types.Block) (*types.Block, *types.PartSet, error) {
-	block, err := blockExec.mempool.NewHydratedBlock(ctx, block)
-	if err != nil {
-		return nil, nil, err
-	}
-	return block, block.MakePartSet(types.BlockPartSizeBytes), nil
 }
 
 // ApplyBlock validates the block against the state, executes it against the app,

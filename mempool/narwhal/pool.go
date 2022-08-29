@@ -101,23 +101,6 @@ func (p *Pool) GlobalCheck(tx types.Tx, res *abci.ResponseCheckTx) (mempool.OpRe
 	return mempool.OpResult{}, nil
 }
 
-func (p *Pool) HydratedBlockData(ctx context.Context, block *types.Block) (types.Data, error) {
-	coll := block.Collections
-	if coll == nil {
-		return types.Data{}, errors.New("invalid <nil> Collections for hydrating block data")
-	}
-
-	txs, err := p.primaryC.DAGCollectionTXs(ctx, *coll)
-	if err != nil {
-		return types.Data{}, err
-	}
-
-	return types.Data{
-		Txs:         txs,
-		Collections: coll,
-	}, nil
-}
-
 func (p *Pool) Meta() mempool.PoolMeta {
 	return mempool.PoolMeta{
 		Type:       "narwhal",
@@ -146,15 +129,25 @@ func (p *Pool) OnBlockFinality(ctx context.Context, block *types.Block, newPreFn
 	return mempool.OpResult{Status: mempool.StatusTxsAvailable}, nil
 }
 
-func (p *Pool) Reap(ctx context.Context, opts mempool.ReapOption) (types.Data, error) {
+func (p *Pool) Reap(ctx context.Context, opts mempool.ReapOption) (mempool.ReapResults, error) {
 	collections, err := p.primaryC.NextBlockCerts(ctx, opts)
 	if err != nil {
-		return types.Data{}, fmt.Errorf("failed to obtain collections: %w", err)
+		return mempool.ReapResults{}, fmt.Errorf("failed to obtain collections: %w", err)
 	}
-	return types.Data{Collections: collections}, nil
+
+	txs, err := p.txsFromColls(ctx, collections)
+	if err != nil {
+		return mempool.ReapResults{}, err
+	}
+
+	return mempool.ReapResults{
+		Collections: collections,
+		Txs:         txs,
+	}, nil
 }
 
 func (p *Pool) Recheck(ctx context.Context, appConn proxy.AppConnMempool) (mempool.OpResult, error) {
+	// noop
 	return mempool.OpResult{}, nil
 }
 
@@ -168,6 +161,18 @@ func (p *Pool) Remove(ctx context.Context, opts mempool.RemOption) (mempool.OpRe
 	}
 
 	return mempool.OpResult{Status: mempool.StatusTxsAvailable}, nil
+}
+
+func (p *Pool) txsFromColls(ctx context.Context, coll *types.DAGCollections) (types.Txs, error) {
+	if coll == nil {
+		return nil, errors.New("invalid <nil> Collections for hydrating block data")
+	}
+
+	txs, err := p.primaryC.DAGCollectionTXs(ctx, *coll)
+	if err != nil {
+		return nil, err
+	}
+	return txs, nil
 }
 
 // newRoundRobinWorkerSelectFn is safe for concurrent access.

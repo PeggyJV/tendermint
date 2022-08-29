@@ -79,6 +79,9 @@ message Header {
   // consensus info
   bytes evidence_hash    = 13;  // evidence included in the block
   bytes proposer_address = 14;  // original proposer of the block
+
+  bytes root_collection = 15;
+  repeated bytes extra_collections = 16;
 }
 
 // Data contains the set of transactions included in the block
@@ -87,9 +90,6 @@ message Data {
   // NOTE: not all txs here are valid.  We're just agreeing on the order first.
   // This means that block.AppHash does not include these txs.
   repeated bytes txs = 1;
-
-  bytes root_collection = 2;
-  repeated bytes extra_collections = 3;
 }
 
 // Vote represents a prevote, precommit, or commit vote from validators for

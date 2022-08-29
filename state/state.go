@@ -245,12 +245,13 @@ func (state State) MakeBlock(
 
 func (state State) MakeBlockV2(
 	height int64,
-	data types.Data,
+	txs types.Txs,
 	commit *types.Commit,
 	evidence []types.Evidence,
 	proposerAddress []byte,
+	colls *types.DAGCollections,
 ) (*types.Block, *types.PartSet) {
-	block := types.MakeBlockV2(height, data, commit, evidence)
+	block := types.MakeBlockV2(height, txs, commit, evidence, colls)
 	return state.makeBlockPartSet(block, height, commit, proposerAddress)
 }
 
