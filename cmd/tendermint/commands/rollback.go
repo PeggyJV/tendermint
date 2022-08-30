@@ -25,7 +25,7 @@ restarting Tendermint the transactions in block n will be re-executed against th
 application.
 `,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			height, hash, err := RollbackState(b.cfg)
+			height, hash, err := rollbackState(b.cfg)
 			if err != nil {
 				return fmt.Errorf("failed to rollback state: %w", err)
 			}
@@ -38,10 +38,10 @@ application.
 	return &cmd
 }
 
-// RollbackState takes the state at the current height n and overwrites it with the state
+// rollbackState takes the state at the current height n and overwrites it with the state
 // at height n - 1. Note state here refers to tendermint state not application state.
 // Returns the latest state height and app hash alongside an error if there was one.
-func RollbackState(config *cfg.Config) (int64, []byte, error) {
+func rollbackState(config *cfg.Config) (int64, []byte, error) {
 	// use the parsed config to load the block and state store
 	blockStore, stateStore, err := loadStateAndBlockStore(config)
 	if err != nil {

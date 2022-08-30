@@ -15,7 +15,6 @@ import (
 
 	dbm "github.com/tendermint/tm-db"
 
-	"github.com/tendermint/tendermint/config"
 	"github.com/tendermint/tendermint/libs/log"
 	tmmath "github.com/tendermint/tendermint/libs/math"
 	tmos "github.com/tendermint/tendermint/libs/os"
@@ -33,12 +32,12 @@ var (
 
 // lightCmd represents the base command when called without any subcommands
 func (b *builderRoot) lightCmd() *cobra.Command {
-	lb := lightBuilder{cfg: b.cfg}
+	lb := lightBuilder{root: b}
 	return lb.cmd()
 }
 
 type lightBuilder struct {
-	cfg *config.Config
+	root *builderRoot
 
 	listenAddr         string
 	primaryAddr        string
@@ -213,14 +212,14 @@ func (lb *lightBuilder) runProxy(cmd *cobra.Command, args []string) error {
 	}
 
 	cfg := rpcserver.DefaultConfig()
-	cfg.MaxBodyBytes = lb.cfg.RPC.MaxBodyBytes
-	cfg.MaxHeaderBytes = lb.cfg.RPC.MaxHeaderBytes
+	cfg.MaxBodyBytes = lb.root.cfg.RPC.MaxBodyBytes
+	cfg.MaxHeaderBytes = lb.root.cfg.RPC.MaxHeaderBytes
 	cfg.MaxOpenConnections = lb.maxOpenConnections
 	// If necessary adjust global WriteTimeout to ensure it's greater than
 	// TimeoutBroadcastTxCommit.
 	// See https://github.com/tendermint/tendermint/issues/3435
-	if cfg.WriteTimeout <= lb.cfg.RPC.TimeoutBroadcastTxCommit {
-		cfg.WriteTimeout = lb.cfg.RPC.TimeoutBroadcastTxCommit + 1*time.Second
+	if cfg.WriteTimeout <= lb.root.cfg.RPC.TimeoutBroadcastTxCommit {
+		cfg.WriteTimeout = lb.root.cfg.RPC.TimeoutBroadcastTxCommit + 1*time.Second
 	}
 
 	p, err := lproxy.NewProxy(c, lb.listenAddr, lb.primaryAddr, cfg, logger, lrpc.KeyPathFn(lrpc.DefaultMerkleKeyPathFn()))

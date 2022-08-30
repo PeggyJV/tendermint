@@ -10,27 +10,10 @@ import (
 	"github.com/spf13/cobra"
 
 	cfg "github.com/tendermint/tendermint/config"
-	"github.com/tendermint/tendermint/libs/log"
 	tmos "github.com/tendermint/tendermint/libs/os"
-	nm "github.com/tendermint/tendermint/node"
 )
 
 func (b *builderRoot) nodeCmd() *cobra.Command {
-	bn := builderNode{
-		cfg:    b.cfg,
-		logger: b.logger,
-	}
-	return bn.cmd(b.nodeFunc)
-}
-
-type builderNode struct {
-	cfg    *cfg.Config
-	logger log.Logger
-
-	genesisHash []byte
-}
-
-func (b *builderNode) cmd(nodeProvider nm.Provider) *cobra.Command {
 	cmd := cobra.Command{
 		Use:     "start",
 		Aliases: []string{"node", "run"},
@@ -40,8 +23,7 @@ func (b *builderNode) cmd(nodeProvider nm.Provider) *cobra.Command {
 			if err != nil {
 				return err
 			}
-
-			n, err := nodeProvider(b.cfg, b.logger)
+			n, err := b.nodeFunc(b.cfg, b.logger)
 			if err != nil {
 				return fmt.Errorf("failed to create node: %w", err)
 			}
@@ -72,7 +54,7 @@ func (b *builderNode) cmd(nodeProvider nm.Provider) *cobra.Command {
 
 // AddNodeFlags exposes some common configuration options on the command-line
 // These are exposed for convenience of commands embedding a tendermint node
-func (b *builderNode) addNodeFlags(cmd *cobra.Command) {
+func (b *builderRoot) addNodeFlags(cmd *cobra.Command) {
 	// bind flags
 	cmd.Flags().String("moniker", b.cfg.Moniker, "node name")
 

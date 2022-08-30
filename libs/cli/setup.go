@@ -26,11 +26,20 @@ type Executable interface {
 
 // PrepareBaseCmd is meant for tendermint and other servers
 func PrepareBaseCmd(cmd *cobra.Command, envPrefix, defaultHome string) Executor {
-	cobra.OnInitialize(func() { initEnv(envPrefix) })
+	vViper := viper.New()
+	return prepareBaseCmd(vViper, cmd, envPrefix, defaultHome)
+}
+
+func prepareBaseCmd(vViper *viper.Viper, cmd *cobra.Command, envPrefix, defaultHome string) Executor {
+	cobra.OnInitialize(func() { initEnv(vViper, envPrefix) })
 	cmd.PersistentFlags().StringP(HomeFlag, "", defaultHome, "directory for config and data")
 	cmd.PersistentFlags().Bool(TraceFlag, false, "print out full stack trace on errors")
-	cmd.PersistentPreRunE = concatCobraCmdFuncs(bindFlagsLoadViper, cmd.PersistentPreRunE)
-	return Executor{cmd, os.Exit}
+	cmd.PersistentPreRunE = concatCobraCmdFuncs(bindFlagsLoadViper(vViper), cmd.PersistentPreRunE)
+	return Executor{
+		Command: cmd,
+		Exit:    os.Exit,
+		viper:   vViper,
+	}
 }
 
 // PrepareMainCmd is meant for client side libs that want some more flags
@@ -38,20 +47,21 @@ func PrepareBaseCmd(cmd *cobra.Command, envPrefix, defaultHome string) Executor 
 // This adds --encoding (hex, btc, base64) and --output (text, json) to
 // the command.  These only really make sense in interactive commands.
 func PrepareMainCmd(cmd *cobra.Command, envPrefix, defaultHome string) Executor {
+	vViper := viper.New()
 	cmd.PersistentFlags().StringP(EncodingFlag, "e", "hex", "Binary encoding (hex|b64|btc)")
 	cmd.PersistentFlags().StringP(OutputFlag, "o", "text", "Output format (text|json)")
-	cmd.PersistentPreRunE = concatCobraCmdFuncs(validateOutput, cmd.PersistentPreRunE)
-	return PrepareBaseCmd(cmd, envPrefix, defaultHome)
+	cmd.PersistentPreRunE = concatCobraCmdFuncs(validateOutput(vViper), cmd.PersistentPreRunE)
+	return prepareBaseCmd(vViper, cmd, envPrefix, defaultHome)
 }
 
 // initEnv sets to use ENV variables if set.
-func initEnv(prefix string) {
+func initEnv(vViper *viper.Viper, prefix string) {
 	copyEnvVars(prefix)
 
 	// env variables with TM prefix (eg. TM_ROOT)
-	viper.SetEnvPrefix(prefix)
-	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_", "-", "_"))
-	viper.AutomaticEnv()
+	vViper.SetEnvPrefix(prefix)
+	vViper.SetEnvKeyReplacer(strings.NewReplacer(".", "_", "-", "_"))
+	vViper.AutomaticEnv()
 }
 
 // This copies all variables like TMROOT to TM_ROOT,
@@ -75,6 +85,8 @@ func copyEnvVars(prefix string) {
 type Executor struct {
 	*cobra.Command
 	Exit func(int) // this is os.Exit by default, override in tests
+
+	viper *viper.Viper
 }
 
 type ExitCoder interface {
@@ -107,6 +119,13 @@ func (e Executor) Execute() error {
 	return err
 }
 
+func (e Executor) Viper() *viper.Viper {
+	if e.viper == nil {
+		return viper.GetViper()
+	}
+	return e.viper
+}
+
 type cobraCmdFunc func(cmd *cobra.Command, args []string) error
 
 // Returns a single function that calls each argument function in sequence
@@ -125,36 +144,41 @@ func concatCobraCmdFuncs(fs ...cobraCmdFunc) cobraCmdFunc {
 }
 
 // Bind all flags and read the config into viper
-func bindFlagsLoadViper(cmd *cobra.Command, args []string) error {
-	// cmd.Flags() includes flags from this command and all persistent flags from the parent
-	if err := viper.BindPFlags(cmd.Flags()); err != nil {
-		return err
-	}
+func bindFlagsLoadViper(vViper *viper.Viper) func(cmd *cobra.Command, args []string) error {
+	return func(cmd *cobra.Command, args []string) error {
 
-	homeDir := viper.GetString(HomeFlag)
-	viper.Set(HomeFlag, homeDir)
-	viper.SetConfigName("config")                         // name of config file (without extension)
-	viper.AddConfigPath(homeDir)                          // search root directory
-	viper.AddConfigPath(filepath.Join(homeDir, "config")) // search root directory /config
+		// cmd.Flags() includes flags from this command and all persistent flags from the parent
+		if err := vViper.BindPFlags(cmd.Flags()); err != nil {
+			return err
+		}
 
-	// If a config file is found, read it in.
-	if err := viper.ReadInConfig(); err == nil {
-		// stderr, so if we redirect output to json file, this doesn't appear
-		// fmt.Fprintln(os.Stderr, "Using config file:", viper.ConfigFileUsed())
-	} else if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
-		// ignore not found error, return other errors
-		return err
+		homeDir := vViper.GetString(HomeFlag)
+		vViper.Set(HomeFlag, homeDir)
+		vViper.SetConfigName("config")                         // name of config file (without extension)
+		vViper.AddConfigPath(homeDir)                          // search root directory
+		vViper.AddConfigPath(filepath.Join(homeDir, "config")) // search root directory /config
+
+		// If a config file is found, read it in.
+		if err := vViper.ReadInConfig(); err == nil {
+			// stderr, so if we redirect output to json file, this doesn't appear
+			// fmt.Fprintln(os.Stderr, "Using config file:", viper.ConfigFileUsed())
+		} else if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
+			// ignore not found error, return other errors
+			return err
+		}
+		return nil
 	}
-	return nil
 }
 
-func validateOutput(cmd *cobra.Command, args []string) error {
-	// validate output format
-	output := viper.GetString(OutputFlag)
-	switch output {
-	case "text", "json":
-	default:
-		return fmt.Errorf("unsupported output format: %s", output)
+func validateOutput(vViper *viper.Viper) func(cmd *cobra.Command, args []string) error {
+	return func(cmd *cobra.Command, args []string) error {
+		// validate output format
+		output := vViper.GetString(OutputFlag)
+		switch output {
+		case "text", "json":
+		default:
+			return fmt.Errorf("unsupported output format: %s", output)
+		}
+		return nil
 	}
-	return nil
 }

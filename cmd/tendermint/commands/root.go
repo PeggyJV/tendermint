@@ -33,22 +33,27 @@ func WithNodeFunc(nodeFn nm.Provider) func(*builderRoot) {
 func Cmd(opts ...func(*builderRoot)) cli.Executor {
 	b := builderRoot{
 		cfg:      cfg.DefaultConfig(),
-		logger:   log.NewTMLogger(log.NewSyncWriter(os.Stdout)),
 		nodeFunc: nm.DefaultNewNode,
 	}
 	for _, o := range opts {
 		o(&b)
 	}
 
+	cmd := b.cmd()
 	defaultHome := os.ExpandEnv(filepath.Join("$HOME", cfg.DefaultTendermintDir))
-	return cli.PrepareBaseCmd(b.cmd(), "TM", defaultHome)
+	ex := cli.PrepareBaseCmd(cmd, "TM", defaultHome)
+	b.viper = ex.Viper()
+
+	return ex
 }
 
 type builderRoot struct {
 	cfg    *cfg.Config
 	logger log.Logger
+	viper  *viper.Viper
 
-	nodeFunc nm.Provider
+	genesisHash []byte
+	nodeFunc    nm.Provider
 }
 
 func (b *builderRoot) cmd() *cobra.Command {
@@ -56,18 +61,19 @@ func (b *builderRoot) cmd() *cobra.Command {
 		Use:   "tendermint",
 		Short: "BFT state machine replication for applications in any programming languages",
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) (err error) {
+			b.logger = log.NewTMLogger(log.NewSyncWriter(cmd.OutOrStdout()))
 			if cmd.Name() == versionCmdName {
 				return nil
 			}
 
-			config, err := parseConfig()
+			config, err := parseConfig(b.viper)
 			if err != nil {
 				return err
 			}
 			b.cfg = config
 
 			if config.LogFormat == cfg.LogFormatJSON {
-				b.logger = log.NewTMJSONLogger(log.NewSyncWriter(os.Stdout))
+				b.logger = log.NewTMJSONLogger(log.NewSyncWriter(cmd.OutOrStdout()))
 			}
 
 			b.logger, err = tmflags.ParseLogLevel(b.cfg.LogLevel, b.logger, cfg.DefaultLogLevel)
@@ -118,9 +124,9 @@ func deprecateSnakeCase(cmd *cobra.Command, args []string) {
 
 // parseConfig retrieves the default environment configuration,
 // sets up the Tendermint root and ensures that the root exists
-func parseConfig() (*cfg.Config, error) {
+func parseConfig(v *viper.Viper) (*cfg.Config, error) {
 	conf := cfg.DefaultConfig()
-	err := viper.Unmarshal(conf)
+	err := v.Unmarshal(conf)
 	if err != nil {
 		return nil, err
 	}
