@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/tendermint/tendermint/cmd/tendermint/commands"
 	"github.com/tendermint/tendermint/config"
 	tmbytes "github.com/tendermint/tendermint/libs/bytes"
 	tmrand "github.com/tendermint/tendermint/libs/rand"
@@ -37,9 +38,10 @@ type TMClient struct {
 }
 
 type LauncherTendermint struct {
-	Host         string
-	Out          io.Writer
-	ProxyAppType string
+	Host                  string
+	Out                   io.Writer
+	ProxyAppType          string
+	RunValidatorInProcess bool
 
 	mNodeCFGs        map[string]*config.Config
 	clients          []*TMClient
@@ -142,6 +144,12 @@ func (l *LauncherTendermint) Start(ctx context.Context) error {
 func (l *LauncherTendermint) runAllNodes(ctx context.Context) (<-chan error, error) {
 	errStream := make(chan error)
 	readyMsgStream := make(chan readyMsg)
+
+	runTMFn := l.runTMValidator
+	if l.RunValidatorInProcess {
+		runTMFn = l.runTMValidatorInProcess
+	}
+
 	go func() {
 		defer close(errStream)
 
@@ -151,7 +159,7 @@ func (l *LauncherTendermint) runAllNodes(ctx context.Context) (<-chan error, err
 			go func(nodeName string) {
 				defer wg.Done()
 
-				err := l.runTMValidator(ctx, readyMsgStream, nodeName)
+				err := runTMFn(ctx, readyMsgStream, nodeName)
 				if err != nil && err != context.Canceled && !isSignalKilledErr(err) {
 					errStream <- err
 				}
@@ -187,24 +195,45 @@ func (l *LauncherTendermint) awaitStartup(ctx context.Context, readyMsgStream <-
 	})
 }
 
-func (l *LauncherTendermint) runTMValidator(ctx context.Context, readyStream chan<- readyMsg, nodeName string) error {
+func (l *LauncherTendermint) runTMValidatorCmd(
+	ctx context.Context,
+	nodeName string,
+	readyStream chan<- readyMsg,
+	fn func(ctx context.Context, mr io.Writer, args []string) error,
+) error {
 	f, closeFn, err := newLogFileWriter(l.dirs.nodeLogFile(nodeName, nodeName))
 	if err != nil {
 		return fmt.Errorf("failed to create log file: %w", err)
 	}
 	defer closeFn()
 
+	readyWriter := newReadyTailWriter(ctx, readyStream, "validator", nodeName, "", tmLineCheckFn)
+	mf := io.MultiWriter(f, readyWriter)
+
 	args := []string{
 		"node",
 		"--home", l.dirs.nodeDir(nodeName),
 		"--proxy_app", l.ProxyAppType,
 	}
-	cmd := exec.CommandContext(ctx, "tendermint", args...)
-	readyWriter := newReadyTailWriter(ctx, readyStream, "validator", nodeName, "", tmLineCheckFn)
-	mf := io.MultiWriter(f, readyWriter)
-	cmd.Stdout, cmd.Stderr = mf, mf
+	return fn(ctx, mf, args)
+}
 
-	return cmd.Run()
+func (l *LauncherTendermint) runTMValidator(ctx context.Context, readyStream chan<- readyMsg, nodeName string) error {
+	return l.runTMValidatorCmd(ctx, nodeName, readyStream, func(ctx context.Context, mr io.Writer, args []string) error {
+		cmd := exec.CommandContext(ctx, "tendermint", args...)
+		cmd.Stdout, cmd.Stderr = mr, mr
+		return cmd.Run()
+	})
+}
+
+func (l *LauncherTendermint) runTMValidatorInProcess(ctx context.Context, readyStream chan<- readyMsg, nodeName string) error {
+	return l.runTMValidatorCmd(ctx, nodeName, readyStream, func(ctx context.Context, mr io.Writer, args []string) (e error) {
+		cmd := commands.Cmd()
+		cmd.SetOut(mr)
+		cmd.SetErr(mr)
+		cmd.SetArgs(args)
+		return cmd.ExecuteContext(ctx)
+	})
 }
 
 type tmNode struct {
@@ -388,10 +417,13 @@ var (
 	tmValidatorReadyMsg      = []byte("Ensure peers")
 	tmValidatorFailedMsg     = []byte("ERROR: failed to create node")
 	tmValidatorFailedGoLvlDB = []byte("dial tcp: address goleveldb: missing port in address")
+	tmValidatorFailedCobra   = []byte("Error: ")
 )
 
 func tmLineCheckFn(b []byte, nodeType string) string {
-	isFailed := bytes.Contains(b, tmValidatorFailedMsg) || bytes.Contains(b, tmValidatorFailedGoLvlDB)
+	isFailed := bytes.Contains(b, tmValidatorFailedMsg) ||
+		bytes.Contains(b, tmValidatorFailedGoLvlDB) ||
+		bytes.Contains(b, tmValidatorFailedCobra)
 	isReady := bytes.Contains(b, tmValidatorReadyMsg)
 
 	var status string

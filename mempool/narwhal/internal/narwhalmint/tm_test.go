@@ -118,7 +118,7 @@ func Test_TM_Narwhal(t *testing.T) {
 
 	clients := ltm.Clients()
 
-	runner := newTMClientRunner(clients, 200_000, 50)
+	runner := newTMClientRunner(clients, 200_000, 10)
 	defer func() {
 		runner.printRunStats(t)
 		writeTestStats(t, narwhalmint.TestDir(start), start, runner.runtimeStats())
@@ -178,15 +178,16 @@ DONE:
 }
 
 type narwhalTMOpts struct {
-	BatchSize    int
-	HeaderSize   int
-	NarwhalHost  string
-	Primaries    int
-	Workers      int
-	ProxyAppType string
-	Out          io.Writer
-	Start        time.Time
-	StartFrom    string
+	BatchSize      int
+	HeaderSize     int
+	NarwhalHost    string
+	Primaries      int
+	Workers        int
+	ProxyAppType   string
+	Out            io.Writer
+	RunTMInProcess bool
+	Start          time.Time
+	StartFrom      string
 }
 
 func startDefaultNarwhalTMNodes(ctx context.Context, tb testing.TB, opts narwhalTMOpts) (*narwhalmint.LauncherNarwhal, *narwhalmint.LauncherTendermint) {
@@ -263,8 +264,9 @@ func startDefaultTMNodes(ctx context.Context, tb testing.TB, narwhalCFGs []*conf
 	}
 
 	ltm := narwhalmint.LauncherTendermint{
-		Host:         "localhost",
-		ProxyAppType: "noop",
+		Host:                  "localhost",
+		ProxyAppType:          "noop",
+		RunValidatorInProcess: opts.RunTMInProcess,
 	}
 	if opts.ProxyAppType != "" {
 		ltm.ProxyAppType = opts.ProxyAppType
