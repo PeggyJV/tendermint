@@ -6,6 +6,7 @@ import (
 	"github.com/spf13/cobra"
 
 	cfg "github.com/tendermint/tendermint/config"
+	"github.com/tendermint/tendermint/libs/log"
 	tmos "github.com/tendermint/tendermint/libs/os"
 	tmrand "github.com/tendermint/tendermint/libs/rand"
 	"github.com/tendermint/tendermint/p2p"
@@ -14,18 +15,17 @@ import (
 	tmtime "github.com/tendermint/tendermint/types/time"
 )
 
-// InitFilesCmd initialises a fresh Tendermint Core instance.
-var InitFilesCmd = &cobra.Command{
-	Use:   "init",
-	Short: "Initialize Tendermint",
-	RunE:  initFiles,
+func (b *builderRoot) initCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "init",
+		Short: "Initialize Tendermint",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return initFilesWithConfig(b.cfg, b.logger)
+		},
+	}
 }
 
-func initFiles(cmd *cobra.Command, args []string) error {
-	return initFilesWithConfig(config)
-}
-
-func initFilesWithConfig(config *cfg.Config) error {
+func initFilesWithConfig(config *cfg.Config, logger log.Logger) error {
 	// private validator
 	privValKeyFile := config.PrivValidatorKeyFile()
 	privValStateFile := config.PrivValidatorStateFile()

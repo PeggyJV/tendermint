@@ -8,21 +8,22 @@ import (
 	"github.com/tendermint/tendermint/p2p"
 )
 
-// ShowNodeIDCmd dumps node's ID to the standard output.
-var ShowNodeIDCmd = &cobra.Command{
-	Use:     "show-node-id",
-	Aliases: []string{"show_node_id"},
-	Short:   "Show this node's ID",
-	RunE:    showNodeID,
-	PreRun:  deprecateSnakeCase,
-}
+func (b *builderRoot) showNodeCmd() *cobra.Command {
+	cmd := cobra.Command{
+		Use:     "show-node-id",
+		Aliases: []string{"show_node_id"},
+		Short:   "Show this node's ID",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			nodeKey, err := p2p.LoadNodeKey(b.cfg.NodeKeyFile())
+			if err != nil {
+				return err
+			}
 
-func showNodeID(cmd *cobra.Command, args []string) error {
-	nodeKey, err := p2p.LoadNodeKey(config.NodeKeyFile())
-	if err != nil {
-		return err
+			fmt.Println(nodeKey.ID())
+			return nil
+		},
+		PreRun: deprecateSnakeCase,
 	}
 
-	fmt.Println(nodeKey.ID())
-	return nil
+	return &cmd
 }

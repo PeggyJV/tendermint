@@ -9,17 +9,19 @@ import (
 	"github.com/tendermint/tendermint/p2p/upnp"
 )
 
-// ProbeUpnpCmd adds capabilities to test the UPnP functionality.
-var ProbeUpnpCmd = &cobra.Command{
-	Use:     "probe-upnp",
-	Aliases: []string{"probe_upnp"},
-	Short:   "Test UPnP functionality",
-	RunE:    probeUpnp,
-	PreRun:  deprecateSnakeCase,
+// probeUpnpCmd adds capabilities to test the UPnP functionality.
+func (b *builderRoot) probeUpnpCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:     "probe-upnp",
+		Aliases: []string{"probe_upnp"},
+		Short:   "Test UPnP functionality",
+		RunE:    b.probeUpnp,
+		PreRun:  deprecateSnakeCase,
+	}
 }
 
-func probeUpnp(cmd *cobra.Command, args []string) error {
-	capabilities, err := upnp.Probe(logger)
+func (b *builderRoot) probeUpnp(cmd *cobra.Command, args []string) error {
+	capabilities, err := upnp.Probe(b.logger)
 	if err != nil {
 		fmt.Println("Probe failed: ", err)
 	} else {

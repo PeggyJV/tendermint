@@ -13,43 +13,46 @@ import (
 
 	cfg "github.com/tendermint/tendermint/config"
 	"github.com/tendermint/tendermint/libs/cli"
+	"github.com/tendermint/tendermint/libs/log"
 	rpchttp "github.com/tendermint/tendermint/rpc/client/http"
 )
 
-var dumpCmd = &cobra.Command{
-	Use:   "dump [output-directory]",
-	Short: "Continuously poll a Tendermint process and dump debugging data into a single location",
-	Long: `Continuously poll a Tendermint process and dump debugging data into a single
+func (b *builder) dumpCmd() *cobra.Command {
+	cmd := cobra.Command{
+		Use:   "dump [output-directory]",
+		Short: "Continuously poll a Tendermint process and dump debugging data into a single location",
+		Long: `Continuously poll a Tendermint process and dump debugging data into a single
 location at a specified frequency. At each frequency interval, an archived and compressed
 file will contain node debugging information including the goroutine and heap profiles
 if enabled.`,
-	Args: cobra.ExactArgs(1),
-	RunE: dumpCmdHandler,
-}
+		Args: cobra.ExactArgs(1),
+		RunE: b.dumpCmdHandler,
+	}
 
-func init() {
-	dumpCmd.Flags().UintVar(
-		&frequency,
-		flagFrequency,
+	cmd.Flags().UintVar(
+		&b.frequency,
+		"frequency",
 		30,
 		"the frequency (seconds) in which to poll, aggregate and dump Tendermint debug data",
 	)
 
-	dumpCmd.Flags().StringVar(
-		&profAddr,
-		flagProfAddr,
+	cmd.Flags().StringVar(
+		&b.profAddr,
+		"pprof-laddr",
 		"",
 		"the profiling server address (<host>:<port>)",
 	)
+
+	return &cmd
 }
 
-func dumpCmdHandler(_ *cobra.Command, args []string) error {
+func (b *builder) dumpCmdHandler(_ *cobra.Command, args []string) error {
 	outDir := args[0]
 	if outDir == "" {
 		return errors.New("invalid output directory")
 	}
 
-	if frequency == 0 {
+	if b.frequency == 0 {
 		return errors.New("frequency must be positive")
 	}
 
@@ -59,7 +62,7 @@ func dumpCmdHandler(_ *cobra.Command, args []string) error {
 		}
 	}
 
-	rpc, err := rpchttp.New(nodeRPCAddr, "/websocket")
+	rpc, err := rpchttp.New(b.nodeRPCAddr, "/websocket")
 	if err != nil {
 		return fmt.Errorf("failed to create new http client: %w", err)
 	}
@@ -69,17 +72,17 @@ func dumpCmdHandler(_ *cobra.Command, args []string) error {
 	conf = conf.SetRoot(home)
 	cfg.EnsureRoot(conf.RootDir)
 
-	dumpDebugData(outDir, conf, rpc)
+	dumpDebugData(b.logger, outDir, conf, rpc, b.profAddr)
 
-	ticker := time.NewTicker(time.Duration(frequency) * time.Second)
+	ticker := time.NewTicker(time.Duration(b.frequency) * time.Second)
 	for range ticker.C {
-		dumpDebugData(outDir, conf, rpc)
+		dumpDebugData(b.logger, outDir, conf, rpc, b.profAddr)
 	}
 
 	return nil
 }
 
-func dumpDebugData(outDir string, conf *cfg.Config, rpc *rpchttp.HTTP) {
+func dumpDebugData(logger log.Logger, outDir string, conf *cfg.Config, rpc *rpchttp.HTTP, profAddr string) {
 	start := time.Now().UTC()
 
 	tmpDir, err := ioutil.TempDir(outDir, "tendermint_debug_tmp")
