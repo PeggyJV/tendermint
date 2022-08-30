@@ -24,6 +24,10 @@ func (e emptyMempool) AfterBlockFinality(ctx context.Context, block *types.Block
 	return nil
 }
 
+func (e emptyMempool) HydrateBlockData(ctx context.Context, bl *types.Block) (types.Data, error) {
+	return bl.Data, nil
+}
+
 
 func (e emptyMempool) PrepBlockFinality(_ context.Context) (func(), error) {
 	return func() {}, nil

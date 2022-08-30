@@ -1273,12 +1273,12 @@ func (cs *State) createProposalBlock() (block *types.Block, blockParts *types.Pa
 	}
 	proposerAddr := cs.privValidatorPubKey.Address()
 
-	block, blockParts, err := cs.blockExec.CreateProposalBlock(cs.Height, cs.state, commit, proposerAddr)
+	res, err := cs.blockExec.CreateProposalBlock(cs.Height, cs.state, commit, proposerAddr)
 	if err != nil {
 		cs.Logger.Error("failed to create proposal block", "err", err)
 		return nil, nil
 	}
-	return block, blockParts
+	return res.Block, res.Block.MakePartSet(types.BlockPartSizeBytes)
 }
 
 // Enter: any +2/3 prevotes at next round.

@@ -204,7 +204,8 @@ func decideProposal(
 	round int32,
 ) (proposal *types.Proposal, block *types.Block) {
 	cs1.mtx.Lock()
-	block, blockParts := cs1.createProposalBlock()
+	res := cs1.createProposalBlock()
+	block, blockParts := res.Block, res.Block.MakePartSet(types.BlockPartSizeBytes)
 	validRound := cs1.ValidRound
 	chainID := cs1.state.ChainID
 	cs1.mtx.Unlock()

@@ -118,7 +118,7 @@ func Test_TM_Narwhal(t *testing.T) {
 
 	clients := ltm.Clients()
 
-	runner := newTMClientRunner(clients, 200000, 50)
+	runner := newTMClientRunner(clients, 200_000, 50)
 	defer func() {
 		runner.printRunStats(t)
 		writeTestStats(t, narwhalmint.TestDir(start), start, runner.runtimeStats())

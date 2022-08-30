@@ -366,7 +366,7 @@ func TestSimulateValidatorsChange(t *testing.T) {
 	err = assertMempool(css[0].txNotifier).
 		CheckTx(ctx, newValidatorTx1, nil, mempl.TxInfo{})
 	assert.Nil(t, err)
-	propBlock, _ := css[0].createProposalBlock() // changeProposer(t, cs1, vs2)
+	propBlock := css[0].createProposalBlock().Block // changeProposer(t, cs1, vs2)
 	propBlockParts := propBlock.MakePartSet(partSize)
 	blockID := types.BlockID{Hash: propBlock.Hash(), PartSetHeader: propBlockParts.Header()}
 
@@ -397,7 +397,7 @@ func TestSimulateValidatorsChange(t *testing.T) {
 	err = assertMempool(css[0].txNotifier).
 		CheckTx(ctx, updateValidatorTx1, nil, mempl.TxInfo{})
 	assert.Nil(t, err)
-	propBlock, _ = css[0].createProposalBlock() // changeProposer(t, cs1, vs2)
+	propBlock = css[0].createProposalBlock().Block // changeProposer(t, cs1, vs2)
 	propBlockParts = propBlock.MakePartSet(partSize)
 	blockID = types.BlockID{Hash: propBlock.Hash(), PartSetHeader: propBlockParts.Header()}
 
@@ -436,7 +436,7 @@ func TestSimulateValidatorsChange(t *testing.T) {
 	err = assertMempool(css[0].txNotifier).
 		CheckTx(ctx, newValidatorTx3, nil, mempl.TxInfo{})
 	assert.Nil(t, err)
-	propBlock, _ = css[0].createProposalBlock() // changeProposer(t, cs1, vs2)
+	propBlock = css[0].createProposalBlock().Block // changeProposer(t, cs1, vs2)
 	propBlockParts = propBlock.MakePartSet(partSize)
 	blockID = types.BlockID{Hash: propBlock.Hash(), PartSetHeader: propBlockParts.Header()}
 	newVss := make([]*validatorStub, nVals+1)
@@ -513,7 +513,7 @@ func TestSimulateValidatorsChange(t *testing.T) {
 	err = assertMempool(css[0].txNotifier).
 		CheckTx(ctx, removeValidatorTx3, nil, mempl.TxInfo{})
 	assert.Nil(t, err)
-	propBlock, _ = css[0].createProposalBlock() // changeProposer(t, cs1, vs2)
+	propBlock = css[0].createProposalBlock().Block // changeProposer(t, cs1, vs2)
 	propBlockParts = propBlock.MakePartSet(partSize)
 	blockID = types.BlockID{Hash: propBlock.Hash(), PartSetHeader: propBlockParts.Header()}
 	newVss = make([]*validatorStub, nVals+3)

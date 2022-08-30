@@ -18,6 +18,10 @@ func (m Mempool) AfterBlockFinality(ctx context.Context, block *types.Block, txR
 	return nil
 }
 
+func (m Mempool) HydrateBlockData(ctx context.Context, bl *types.Block) (types.Data, error) {
+	return bl.Data, nil
+}
+
 func (m Mempool) PrepBlockFinality(_ context.Context) (func(), error) {
 	return func() {}, nil
 }
