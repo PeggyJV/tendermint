@@ -9,22 +9,24 @@ import (
 	"github.com/tendermint/tendermint/privval"
 )
 
-// GenValidatorCmd allows the generation of a keypair for a
-// validator.
-var GenValidatorCmd = &cobra.Command{
-	Use:     "gen-validator",
-	Aliases: []string{"gen_validator"},
-	Short:   "Generate new validator keypair",
-	PreRun:  deprecateSnakeCase,
-	Run:     genValidator,
+func (b *builderRoot) genValidatorCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:     "gen-validator",
+		Aliases: []string{"gen_validator"},
+		Short:   "Generate new validator keypair",
+		PreRun:  deprecateSnakeCase,
+		RunE:    genValidator,
+	}
 }
 
-func genValidator(cmd *cobra.Command, args []string) {
+func genValidator(cmd *cobra.Command, args []string) error {
 	pv := privval.GenFilePV("", "")
 	jsbz, err := tmjson.Marshal(pv)
 	if err != nil {
 		panic(err)
 	}
-	fmt.Printf(`%v
+
+	_, err = fmt.Fprintf(cmd.OutOrStdout(), `%v
 `, string(jsbz))
+	return err
 }

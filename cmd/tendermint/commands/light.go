@@ -15,6 +15,7 @@ import (
 
 	dbm "github.com/tendermint/tm-db"
 
+	"github.com/tendermint/tendermint/config"
 	"github.com/tendermint/tendermint/libs/log"
 	tmmath "github.com/tendermint/tendermint/libs/math"
 	tmos "github.com/tendermint/tendermint/libs/os"
@@ -25,11 +26,40 @@ import (
 	rpcserver "github.com/tendermint/tendermint/rpc/jsonrpc/server"
 )
 
-// LightCmd represents the base command when called without any subcommands
-var LightCmd = &cobra.Command{
-	Use:   "light [chainID]",
-	Short: "Run a light client proxy server, verifying Tendermint rpc",
-	Long: `Run a light client proxy server, verifying Tendermint rpc.
+var (
+	primaryKey   = []byte("primary")
+	witnessesKey = []byte("witnesses")
+)
+
+// lightCmd represents the base command when called without any subcommands
+func (b *builderRoot) lightCmd() *cobra.Command {
+	lb := lightBuilder{cfg: b.cfg}
+	return lb.cmd()
+}
+
+type lightBuilder struct {
+	cfg *config.Config
+
+	listenAddr         string
+	primaryAddr        string
+	witnessAddrsJoined string
+	home               string
+	maxOpenConnections int
+
+	sequential     bool
+	trustingPeriod time.Duration
+	trustedHeight  int64
+	trustedHash    []byte
+	trustLevelStr  string
+
+	verbose bool
+}
+
+func (lb *lightBuilder) cmd() *cobra.Command {
+	cmd := cobra.Command{
+		Use:   "light [chainID]",
+		Short: "Run a light client proxy server, verifying Tendermint rpc",
+		Long: `Run a light client proxy server, verifying Tendermint rpc.
 
 All calls that can be tracked back to a block header by a proof
 will be verified before passing them back to the caller. Other than
@@ -47,101 +77,82 @@ When /abci_query is called, the Merkle key path format is:
 Please verify with your application that this Merkle key format is used (true
 for applications built w/ Cosmos SDK).
 `,
-	RunE: runProxy,
-	Args: cobra.ExactArgs(1),
-	Example: `light cosmoshub-3 -p http://52.57.29.196:26657 -w http://public-seed-node.cosmoshub.certus.one:26657
+		RunE: lb.runProxy,
+		Args: cobra.ExactArgs(1),
+		Example: `light cosmoshub-3 -p http://52.57.29.196:26657 -w http://public-seed-node.cosmoshub.certus.one:26657
 	--height 962118 --hash 28B97BE9F6DE51AC69F70E0B7BFD7E5C9CD1A595B7DC31AFF27C50D4948020CD`,
-}
+	}
 
-var (
-	listenAddr         string
-	primaryAddr        string
-	witnessAddrsJoined string
-	chainID            string
-	home               string
-	maxOpenConnections int
-
-	sequential     bool
-	trustingPeriod time.Duration
-	trustedHeight  int64
-	trustedHash    []byte
-	trustLevelStr  string
-
-	verbose bool
-
-	primaryKey   = []byte("primary")
-	witnessesKey = []byte("witnesses")
-)
-
-func init() {
-	LightCmd.Flags().StringVar(&listenAddr, "laddr", "tcp://localhost:8888",
+	cmd.Flags().StringVar(&lb.listenAddr, "laddr", "tcp://localhost:8888",
 		"serve the proxy on the given address")
-	LightCmd.Flags().StringVarP(&primaryAddr, "primary", "p", "",
+	cmd.Flags().StringVarP(&lb.primaryAddr, "primary", "p", "",
 		"connect to a Tendermint node at this address")
-	LightCmd.Flags().StringVarP(&witnessAddrsJoined, "witnesses", "w", "",
+	cmd.Flags().StringVarP(&lb.witnessAddrsJoined, "witnesses", "w", "",
 		"tendermint nodes to cross-check the primary node, comma-separated")
-	LightCmd.Flags().StringVar(&home, "home-dir", os.ExpandEnv(filepath.Join("$HOME", ".tendermint-light")),
+	cmd.Flags().StringVar(&lb.home, "home-dir", os.ExpandEnv(filepath.Join("$HOME", ".tendermint-light")),
 		"specify the home directory")
-	LightCmd.Flags().IntVar(
-		&maxOpenConnections,
+	cmd.Flags().IntVar(
+		&lb.maxOpenConnections,
 		"max-open-connections",
 		900,
 		"maximum number of simultaneous connections (including WebSocket).")
-	LightCmd.Flags().DurationVar(&trustingPeriod, "trusting-period", 168*time.Hour,
+	cmd.Flags().DurationVar(&lb.trustingPeriod, "trusting-period", 168*time.Hour,
 		"trusting period that headers can be verified within. Should be significantly less than the unbonding period")
-	LightCmd.Flags().Int64Var(&trustedHeight, "height", 1, "Trusted header's height")
-	LightCmd.Flags().BytesHexVar(&trustedHash, "hash", []byte{}, "Trusted header's hash")
-	LightCmd.Flags().BoolVar(&verbose, "verbose", false, "Verbose output")
-	LightCmd.Flags().StringVar(&trustLevelStr, "trust-level", "1/3",
+	cmd.Flags().Int64Var(&lb.trustedHeight, "height", 1, "Trusted header's height")
+	cmd.Flags().BytesHexVar(&lb.trustedHash, "hash", []byte{}, "Trusted header's hash")
+	cmd.Flags().BoolVar(&lb.verbose, "verbose", false, "Verbose output")
+	cmd.Flags().StringVar(&lb.trustLevelStr, "trust-level", "1/3",
 		"trust level. Must be between 1/3 and 3/3",
 	)
-	LightCmd.Flags().BoolVar(&sequential, "sequential", false,
+	cmd.Flags().BoolVar(&lb.sequential, "sequential", false,
 		"sequential verification. Verify all headers sequentially as opposed to using skipping verification",
 	)
+
+	return &cmd
 }
 
-func runProxy(cmd *cobra.Command, args []string) error {
+func (lb *lightBuilder) runProxy(cmd *cobra.Command, args []string) error {
 	// Initialise logger.
 	logger := log.NewTMLogger(log.NewSyncWriter(os.Stdout))
 	var option log.Option
-	if verbose {
+	if lb.verbose {
 		option, _ = log.AllowLevel("debug")
 	} else {
 		option, _ = log.AllowLevel("info")
 	}
 	logger = log.NewFilter(logger, option)
 
-	chainID = args[0]
+	chainID := args[0]
 	logger.Info("Creating client...", "chainID", chainID)
 
 	witnessesAddrs := []string{}
-	if witnessAddrsJoined != "" {
-		witnessesAddrs = strings.Split(witnessAddrsJoined, ",")
+	if lb.witnessAddrsJoined != "" {
+		witnessesAddrs = strings.Split(lb.witnessAddrsJoined, ",")
 	}
 
-	db, err := dbm.NewGoLevelDB("light-client-db", home)
+	db, err := dbm.NewGoLevelDB("light-client-db", lb.home)
 	if err != nil {
 		return fmt.Errorf("can't create a db: %w", err)
 	}
 
-	if primaryAddr == "" { // check to see if we can start from an existing state
+	if lb.primaryAddr == "" { // check to see if we can start from an existing state
 		var err error
-		primaryAddr, witnessesAddrs, err = checkForExistingProviders(db)
+		lb.primaryAddr, witnessesAddrs, err = checkForExistingProviders(db)
 		if err != nil {
 			return fmt.Errorf("failed to retrieve primary or witness from db: %w", err)
 		}
-		if primaryAddr == "" {
+		if lb.primaryAddr == "" {
 			return errors.New("no primary address was provided nor found. Please provide a primary (using -p)." +
 				" Run the command: tendermint light --help for more information")
 		}
 	} else {
-		err := saveProviders(db, primaryAddr, witnessAddrsJoined)
+		err := saveProviders(db, lb.primaryAddr, lb.witnessAddrsJoined)
 		if err != nil {
 			logger.Error("Unable to save primary and or witness addresses", "err", err)
 		}
 	}
 
-	trustLevel, err := tmmath.ParseFraction(trustLevelStr)
+	trustLevel, err := tmmath.ParseFraction(lb.trustLevelStr)
 	if err != nil {
 		return fmt.Errorf("can't parse trust level: %w", err)
 	}
@@ -166,23 +177,23 @@ func runProxy(cmd *cobra.Command, args []string) error {
 		}),
 	}
 
-	if sequential {
+	if lb.sequential {
 		options = append(options, light.SequentialVerification())
 	} else {
 		options = append(options, light.SkippingVerification(trustLevel))
 	}
 
 	var c *light.Client
-	if trustedHeight > 0 && len(trustedHash) > 0 { // fresh installation
+	if lb.trustedHeight > 0 && len(lb.trustedHash) > 0 { // fresh installation
 		c, err = light.NewHTTPClient(
 			context.Background(),
 			chainID,
 			light.TrustOptions{
-				Period: trustingPeriod,
-				Height: trustedHeight,
-				Hash:   trustedHash,
+				Period: lb.trustingPeriod,
+				Height: lb.trustedHeight,
+				Hash:   lb.trustedHash,
 			},
-			primaryAddr,
+			lb.primaryAddr,
 			witnessesAddrs,
 			dbs.New(db, chainID),
 			options...,
@@ -190,8 +201,8 @@ func runProxy(cmd *cobra.Command, args []string) error {
 	} else { // continue from latest state
 		c, err = light.NewHTTPClientFromTrustedStore(
 			chainID,
-			trustingPeriod,
-			primaryAddr,
+			lb.trustingPeriod,
+			lb.primaryAddr,
 			witnessesAddrs,
 			dbs.New(db, chainID),
 			options...,
@@ -202,17 +213,17 @@ func runProxy(cmd *cobra.Command, args []string) error {
 	}
 
 	cfg := rpcserver.DefaultConfig()
-	cfg.MaxBodyBytes = config.RPC.MaxBodyBytes
-	cfg.MaxHeaderBytes = config.RPC.MaxHeaderBytes
-	cfg.MaxOpenConnections = maxOpenConnections
+	cfg.MaxBodyBytes = lb.cfg.RPC.MaxBodyBytes
+	cfg.MaxHeaderBytes = lb.cfg.RPC.MaxHeaderBytes
+	cfg.MaxOpenConnections = lb.maxOpenConnections
 	// If necessary adjust global WriteTimeout to ensure it's greater than
 	// TimeoutBroadcastTxCommit.
 	// See https://github.com/tendermint/tendermint/issues/3435
-	if cfg.WriteTimeout <= config.RPC.TimeoutBroadcastTxCommit {
-		cfg.WriteTimeout = config.RPC.TimeoutBroadcastTxCommit + 1*time.Second
+	if cfg.WriteTimeout <= lb.cfg.RPC.TimeoutBroadcastTxCommit {
+		cfg.WriteTimeout = lb.cfg.RPC.TimeoutBroadcastTxCommit + 1*time.Second
 	}
 
-	p, err := lproxy.NewProxy(c, listenAddr, primaryAddr, cfg, logger, lrpc.KeyPathFn(lrpc.DefaultMerkleKeyPathFn()))
+	p, err := lproxy.NewProxy(c, lb.listenAddr, lb.primaryAddr, cfg, logger, lrpc.KeyPathFn(lrpc.DefaultMerkleKeyPathFn()))
 	if err != nil {
 		return err
 	}
@@ -222,7 +233,7 @@ func runProxy(cmd *cobra.Command, args []string) error {
 		p.Listener.Close()
 	})
 
-	logger.Info("Starting proxy...", "laddr", listenAddr)
+	logger.Info("Starting proxy...", "laddr", lb.listenAddr)
 	if err := p.ListenAndServe(); err != http.ErrServerClosed {
 		// Error starting or closing listener:
 		logger.Error("proxy ListenAndServe", "err", err)

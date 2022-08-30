@@ -12,45 +12,46 @@ import (
 
 // ResetAllCmd removes the database of this Tendermint core
 // instance.
-var ResetAllCmd = &cobra.Command{
-	Use:     "unsafe-reset-all",
-	Aliases: []string{"unsafe_reset_all"},
-	Short:   "(unsafe) Remove all the data and WAL, reset this node's validator to genesis state",
-	Run:     resetAll,
-	PreRun:  deprecateSnakeCase,
+func (b *builderRoot) resetCmd() *cobra.Command {
+	var keepAddrBook bool
+	cmd := cobra.Command{
+		Use:     "unsafe-reset-all",
+		Aliases: []string{"unsafe_reset_all"},
+		Short:   "(unsafe) Remove all the data and WAL, reset this node's validator to genesis state",
+		PreRun:  deprecateSnakeCase,
+		Run: func(cmd *cobra.Command, args []string) {
+			ResetAll(
+				b.cfg.DBDir(),
+				b.cfg.P2P.AddrBookFile(),
+				b.cfg.PrivValidatorKeyFile(),
+				b.cfg.PrivValidatorStateFile(),
+				b.logger,
+				keepAddrBook,
+			)
+		},
+	}
+	cmd.Flags().BoolVar(&keepAddrBook, "keep-addr-book", false, "keep the address book intact")
+
+	return &cmd
 }
 
-var keepAddrBook bool
+func (b *builderRoot) resetPrivValidatorCmd() *cobra.Command {
+	cmd := cobra.Command{
+		Use:     "unsafe-reset-priv-validator",
+		Aliases: []string{"unsafe_reset_priv_validator"},
+		Short:   "(unsafe) Reset this node's validator to genesis state",
+		PreRun:  deprecateSnakeCase,
+		Run: func(cmd *cobra.Command, args []string) {
+			resetFilePV(b.cfg.PrivValidatorKeyFile(), b.cfg.PrivValidatorStateFile(), b.logger)
+		},
+	}
 
-func init() {
-	ResetAllCmd.Flags().BoolVar(&keepAddrBook, "keep-addr-book", false, "keep the address book intact")
-}
-
-// ResetPrivValidatorCmd resets the private validator files.
-var ResetPrivValidatorCmd = &cobra.Command{
-	Use:     "unsafe-reset-priv-validator",
-	Aliases: []string{"unsafe_reset_priv_validator"},
-	Short:   "(unsafe) Reset this node's validator to genesis state",
-	Run:     resetPrivValidator,
-	PreRun:  deprecateSnakeCase,
-}
-
-// XXX: this is totally unsafe.
-// it's only suitable for testnets.
-func resetAll(cmd *cobra.Command, args []string) {
-	ResetAll(config.DBDir(), config.P2P.AddrBookFile(), config.PrivValidatorKeyFile(),
-		config.PrivValidatorStateFile(), logger)
-}
-
-// XXX: this is totally unsafe.
-// it's only suitable for testnets.
-func resetPrivValidator(cmd *cobra.Command, args []string) {
-	resetFilePV(config.PrivValidatorKeyFile(), config.PrivValidatorStateFile(), logger)
+	return &cmd
 }
 
 // ResetAll removes address book files plus all data, and resets the privValdiator data.
 // Exported so other CLI tools can use it.
-func ResetAll(dbDir, addrBookFile, privValKeyFile, privValStateFile string, logger log.Logger) {
+func ResetAll(dbDir, addrBookFile, privValKeyFile, privValStateFile string, logger log.Logger, keepAddrBook bool) {
 	if keepAddrBook {
 		logger.Info("The address book remains intact")
 	} else {
