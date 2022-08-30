@@ -382,7 +382,15 @@ func (r *tmClientRunner) printRunStats(tb testing.TB) {
 	stats := r.runtimeStats()
 	defer func() {
 		tb.Logf("runtime stats:\ttook=%s", stats.Took)
-		for node, st := range r.mStats {
+
+		var nodes []string
+		for nodeName := range r.mStats {
+			nodes = append(nodes, nodeName)
+		}
+		sort.Strings(nodes)
+
+		for _, node := range nodes {
+			st := r.mStats[node]
 			curTx, totalErrs, progress := st.stats()
 			txsSuccess := math.Abs(float64(st.totalTxs-totalErrs)/float64(st.totalTxs)) * 100
 			part := fmt.Sprintf(

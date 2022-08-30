@@ -2,9 +2,10 @@ package consensus
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"os"
 	"runtime/debug"
 	"sort"
@@ -653,6 +654,7 @@ func (cs *State) updateToState(state sm.State) {
 
 	cs.Validators = validators
 	cs.Proposal = nil
+	cs.ConsensusPartSet = nil
 	cs.ProposalBlock = nil
 	cs.ProposalBlockParts = nil
 	cs.LockedRound = -1
@@ -823,10 +825,12 @@ func (cs *State) handleMsg(mi msgInfo) {
 			)
 			err = nil
 		} else if err != nil {
-			cs.Logger.Error("failed to all proposal block part",
+			cs.Logger.Error("failed to add proposal block part",
 				"err", err,
 				"height", cs.Height,
 				"cs_round", cs.Round,
+				"consensus_partset", cs.ConsensusPartSet.StringShort(),
+				"part_idx", msg.Part.Index,
 				"block_round", msg.Round,
 			)
 		}
@@ -992,6 +996,7 @@ func (cs *State) enterNewRound(height int64, round int32) {
 	} else {
 		logger.Debug("resetting proposal info")
 		cs.Proposal = nil
+		cs.ConsensusPartSet = nil
 		cs.ProposalBlock = nil
 		cs.ProposalBlockParts = nil
 	}
@@ -1104,20 +1109,27 @@ func (cs *State) isProposer(address []byte) bool {
 
 func (cs *State) defaultDecideProposal(height int64, round int32) {
 	var (
-		block      *types.Block
-		blockParts *types.PartSet
+		block               *types.Block
+		propBlockID         types.BlockID
+		consensusBlockParts *types.PartSet
 	)
 
 	// Decide on block
 	if cs.ValidBlock != nil {
 		// If there is valid block, choose that.
-		block, blockParts = cs.ValidBlock, cs.ValidBlockParts
+		block = cs.ValidBlock
+		propBlockID = types.BlockID{
+			Hash:          block.Hash(),
+			PartSetHeader: cs.ValidBlockParts.Header(),
+		}
+		consensusBlockParts = cs.blockExec.ConsensusPartSetFromBlock(block)
 	} else {
 		// Create a new proposal block from state/txs from the mempool.
-		block, blockParts = cs.createProposalBlock()
-		if block == nil {
+		res := cs.createProposalBlock()
+		if res.Block == nil {
 			return
 		}
+		block, propBlockID, consensusBlockParts = res.Block, res.BlockID, res.ConsensusBlockSet
 	}
 
 	// Flush the WAL. Otherwise, we may not recompute the same proposal to sign,
@@ -1127,8 +1139,7 @@ func (cs *State) defaultDecideProposal(height int64, round int32) {
 	}
 
 	// Make proposal
-	propBlockID := types.BlockID{Hash: block.Hash(), PartSetHeader: blockParts.Header()}
-	proposal := types.NewProposal(height, round, cs.ValidRound, propBlockID)
+	proposal := types.NewProposalV2(height, round, cs.ValidRound, propBlockID, consensusBlockParts.Header())
 	p := proposal.ToProto()
 	if err := cs.privValidator.SignProposal(cs.state.ChainID, p); err == nil {
 		proposal.Signature = p.Signature
@@ -1136,8 +1147,8 @@ func (cs *State) defaultDecideProposal(height int64, round int32) {
 		// send proposal and block parts on internal msg queue
 		cs.sendInternalMessage(msgInfo{&ProposalMessage{proposal}, ""})
 
-		for i := 0; i < int(blockParts.Total()); i++ {
-			part := blockParts.GetPart(i)
+		for i := 0; i < int(consensusBlockParts.Total()); i++ {
+			part := consensusBlockParts.GetPart(i)
 			cs.sendInternalMessage(msgInfo{&BlockPartMessage{cs.Height, cs.Round, part}, ""})
 		}
 
@@ -1170,7 +1181,7 @@ func (cs *State) isProposalComplete() bool {
 //
 // NOTE: keep it side-effect free for clarity.
 // CONTRACT: cs.privValidator is not nil.
-func (cs *State) createProposalBlock() (block *types.Block, blockParts *types.PartSet) {
+func (cs *State) createProposalBlock() sm.ProposedBlockResults {
 	if cs.privValidator == nil {
 		panic("entered createProposalBlock with privValidator being nil")
 	}
@@ -1188,19 +1199,19 @@ func (cs *State) createProposalBlock() (block *types.Block, blockParts *types.Pa
 
 	default: // This shouldn't happen.
 		cs.Logger.Error("propose step; cannot propose anything without commit for the previous block")
-		return
+		return sm.ProposedBlockResults{}
 	}
 
 	if cs.privValidatorPubKey == nil {
 		// If this node is a validator & proposer in the current round, it will
 		// miss the opportunity to create a block.
 		cs.Logger.Error("propose step; empty priv validator public key", "err", errPubKeyIsNotSet)
-		return
+		return sm.ProposedBlockResults{}
 	}
 
 	proposerAddr := cs.privValidatorPubKey.Address()
 
-	block, blockParts, err := cs.blockExec.CreateProposalBlock(cs.Height, cs.state, commit, proposerAddr)
+	res, err := cs.blockExec.CreateProposalBlock(cs.Height, cs.state, commit, proposerAddr)
 	if err != nil {
 		cs.Logger.Error("failed to create proposed block",
 			"err", err,
@@ -1209,7 +1220,7 @@ func (cs *State) createProposalBlock() (block *types.Block, blockParts *types.Pa
 			"step", cs.Step,
 		)
 	}
-	return block, blockParts
+	return res
 }
 
 // Enter: `timeoutPropose` after entering Propose.
@@ -1517,6 +1528,7 @@ func (cs *State) enterCommit(height int64, commitRound int32) {
 			// We're getting the wrong block.
 			// Set up ProposalBlockParts and keep waiting.
 			cs.ProposalBlock = nil
+			cs.ConsensusPartSet = nil // TODO(berg): do we need this here?
 			cs.ProposalBlockParts = types.NewPartSetFromHeader(blockID.PartSetHeader)
 
 			if err := cs.eventBus.PublishEventValidBlock(cs.RoundStateEvent()); err != nil {
@@ -1833,6 +1845,9 @@ func (cs *State) defaultSetProposal(proposal *types.Proposal) error {
 	if cs.ProposalBlockParts == nil {
 		cs.ProposalBlockParts = types.NewPartSetFromHeader(proposal.BlockID.PartSetHeader)
 	}
+	if cs.ConsensusPartSet == nil {
+		cs.ConsensusPartSet = types.NewPartSetFromHeader(proposal.ConsensusPartSetHeader)
+	}
 
 	cs.Logger.Info("received proposal", "proposal", proposal)
 	return nil
@@ -1851,7 +1866,7 @@ func (cs *State) addProposalBlockPart(msg *BlockPartMessage, peerID p2p.ID) (add
 	}
 
 	// We're not expecting a block part.
-	if cs.ProposalBlockParts == nil {
+	if cs.ConsensusPartSet == nil {
 		// NOTE: this can happen when we've gone to a higher round and
 		// then receive parts from the previous round - not necessarily a bad peer.
 		cs.Logger.Debug(
@@ -1864,17 +1879,17 @@ func (cs *State) addProposalBlockPart(msg *BlockPartMessage, peerID p2p.ID) (add
 		return false, nil
 	}
 
-	added, err = cs.ProposalBlockParts.AddPart(part)
+	added, err = cs.ConsensusPartSet.AddPart(part)
 	if err != nil {
 		return added, err
 	}
-	if cs.ProposalBlockParts.ByteSize() > cs.state.ConsensusParams.Block.MaxBytes {
+	if bs := cs.ConsensusPartSet.ByteSize(); bs > cs.state.ConsensusParams.Block.MaxBytes {
 		return added, fmt.Errorf("total size of proposal block parts exceeds maximum block bytes (%d > %d)",
-			cs.ProposalBlockParts.ByteSize(), cs.state.ConsensusParams.Block.MaxBytes,
+			bs, cs.state.ConsensusParams.Block.MaxBytes,
 		)
 	}
-	if added && cs.ProposalBlockParts.IsComplete() {
-		bz, err := ioutil.ReadAll(cs.ProposalBlockParts.GetReader())
+	if added && cs.ConsensusPartSet.IsComplete() {
+		bz, err := io.ReadAll(cs.ConsensusPartSet.GetReader())
 		if err != nil {
 			return added, err
 		}
@@ -1890,7 +1905,15 @@ func (cs *State) addProposalBlockPart(msg *BlockPartMessage, peerID p2p.ID) (add
 			return added, err
 		}
 
+		data, err := cs.blockExec.HydrateBlockData(context.TODO(), block)
+		if err != nil {
+			return added, err
+		}
+		block.Data = data
+
 		cs.ProposalBlock = block
+		// TODO(berg): clean this up, shouldn't have make part set in multiple places...
+		cs.ProposalBlockParts = block.MakePartSet(types.BlockPartSizeBytes)
 
 		// NOTE: it's possible to receive complete proposal blocks for future rounds without having the proposal
 		cs.Logger.Info("received complete proposal block", "height", cs.ProposalBlock.Height, "hash", cs.ProposalBlock.Hash(), "num_txs", len(cs.ProposalBlock.Txs))

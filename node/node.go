@@ -827,6 +827,11 @@ func NewNode(config *cfg.Config,
 		return nil, err
 	}
 
+	blockExecOpts := []sm.BlockExecutorOption{sm.BlockExecutorWithMetrics(smMetrics)}
+	if config.Consensus.ConsensusPartSetFnOverride == "sans_data" {
+		blockExecOpts = append(blockExecOpts, sm.BlockExecutorWithConsensusPartsetSansData())
+	}
+
 	// make block executor for consensus and blockchain reactors to execute blocks
 	blockExec := sm.NewBlockExecutor(
 		stateStore,
@@ -834,7 +839,7 @@ func NewNode(config *cfg.Config,
 		proxyApp.Consensus(),
 		mpABCI,
 		evidencePool,
-		sm.BlockExecutorWithMetrics(smMetrics),
+		blockExecOpts...,
 	)
 
 	// Make BlockchainReactor. Don't start fast sync if we're doing a state sync first.

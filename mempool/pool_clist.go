@@ -140,6 +140,10 @@ func (mem *PoolCList) Flush(ctx context.Context) error {
 	return nil
 }
 
+func (mem *PoolCList) HydrateBlockData(ctx context.Context, bl *types.Block) (types.Data, error) {
+	return bl.Data, nil
+}
+
 func (mem *PoolCList) GlobalCheck(tx types.Tx, res *abci.ResponseCheckTx) (OpResult, error) {
 	if mem.recheckCursor == nil {
 		return OpResult{}, nil

@@ -188,6 +188,10 @@ func (a *ABCI) Flush(ctx context.Context) error {
 	return a.pool.Flush(ctx)
 }
 
+func (a *ABCI) HydrateBlockData(ctx context.Context, bl *types.Block) (types.Data, error) {
+	return a.pool.HydrateBlockData(ctx, bl)
+}
+
 // PoolMeta returns the metadata for the underlying pool implementation.
 func (a *ABCI) PoolMeta() PoolMeta {
 	return a.pool.Meta()

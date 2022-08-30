@@ -500,9 +500,9 @@ OUTER_LOOP:
 		prs := ps.GetRoundState()
 
 		// Send proposal Block parts?
-		if rs.ProposalBlockParts.HasHeader(prs.ProposalBlockPartSetHeader) {
-			if index, ok := rs.ProposalBlockParts.BitArray().Sub(prs.ProposalBlockParts.Copy()).PickRandom(); ok {
-				part := rs.ProposalBlockParts.GetPart(index)
+		if rsPS, prsRS := rs.ConsensusPartSet, prs.ProposalBlockParts; rsPS.HasHeader(prs.ProposalBlockPartSetHeader) {
+			if index, ok := rsPS.BitArray().Sub(prsRS.Copy()).PickRandom(); ok {
+				part := rsPS.GetPart(index)
 				msg := &BlockPartMessage{
 					Height: rs.Height, // This tells peer that this part applies to us.
 					Round:  rs.Round,  // This tells peer that this part applies to us.
@@ -1013,8 +1013,9 @@ func (ps *PeerState) SetHasProposal(proposal *types.Proposal) {
 		return
 	}
 
-	ps.PRS.ProposalBlockPartSetHeader = proposal.BlockID.PartSetHeader
-	ps.PRS.ProposalBlockParts = bits.NewBitArray(int(proposal.BlockID.PartSetHeader.Total))
+	consensusPSH := proposal.ConsensusPartSetHeader
+	ps.PRS.ProposalBlockPartSetHeader = consensusPSH
+	ps.PRS.ProposalBlockParts = bits.NewBitArray(int(consensusPSH.Total))
 	ps.PRS.ProposalPOLRound = proposal.POLRound
 	ps.PRS.ProposalPOL = nil // Nil until ProposalPOLMessage received.
 }

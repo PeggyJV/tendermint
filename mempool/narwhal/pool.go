@@ -101,6 +101,14 @@ func (p *Pool) GlobalCheck(tx types.Tx, res *abci.ResponseCheckTx) (mempool.OpRe
 	return mempool.OpResult{}, nil
 }
 
+func (p *Pool) HydrateBlockData(ctx context.Context, bl *types.Block) (types.Data, error) {
+	txs, err := p.txsFromColls(ctx, bl.Collections)
+	if err != nil {
+		return types.Data{}, err
+	}
+	return types.Data{Txs: txs}, nil
+}
+
 func (p *Pool) Meta() mempool.PoolMeta {
 	return mempool.PoolMeta{
 		Type:       "narwhal",

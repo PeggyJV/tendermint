@@ -952,6 +952,8 @@ type ConsensusConfig struct {
 	PeerQueryMaj23SleepDuration time.Duration `mapstructure:"peer_query_maj23_sleep_duration"`
 
 	DoubleSignCheckHeight int64 `mapstructure:"double_sign_check_height"`
+
+	ConsensusPartSetFnOverride string `mapstructure:"consensus_part_set_override"`
 }
 
 // DefaultConsensusConfig returns a default configuration for the consensus service

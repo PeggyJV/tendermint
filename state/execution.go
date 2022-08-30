@@ -25,6 +25,7 @@ type Mempool interface {
 		newPreFn mempl.PreCheckFunc,
 		newPostFn mempl.PostCheckFunc,
 	) error
+	HydrateBlockData(ctx context.Context, bl *types.Block) (types.Data, error)
 	PrepBlockFinality(_ context.Context) (func(), error)
 	Reap(ctx context.Context, opts ...mempl.ReapOptFn) (mempl.ReapResults, error)
 }
@@ -45,6 +46,8 @@ type BlockExecutor struct {
 	// events
 	eventBus types.BlockEventPublisher
 
+	consensusBlockPartSetFn func(*types.Block) *types.PartSet
+
 	// manage the mempool lock during commit
 	// and update both with block results after commit.
 	mempool Mempool
@@ -60,6 +63,19 @@ type BlockExecutorOption func(executor *BlockExecutor)
 func BlockExecutorWithMetrics(metrics *Metrics) BlockExecutorOption {
 	return func(blockExec *BlockExecutor) {
 		blockExec.metrics = metrics
+	}
+}
+
+func BlockExecutorWithConsensusPartsetSansData() BlockExecutorOption {
+	return func(executor *BlockExecutor) {
+		executor.consensusBlockPartSetFn = func(block *types.Block) *types.PartSet {
+			csBlock := types.Block{
+				Header:     block.Header,
+				Evidence:   block.Evidence,
+				LastCommit: block.LastCommit,
+			}
+			return csBlock.MakePartSet(types.BlockPartSizeBytes)
+		}
 	}
 }
 
@@ -79,8 +95,11 @@ func NewBlockExecutor(
 		eventBus: types.NopEventBus{},
 		mempool:  mempool,
 		evpool:   evpool,
-		logger:   logger,
-		metrics:  NopMetrics(),
+		consensusBlockPartSetFn: func(bl *types.Block) *types.PartSet {
+			return bl.MakePartSet(types.BlockPartSizeBytes)
+		},
+		logger:  logger,
+		metrics: NopMetrics(),
 	}
 
 	for _, option := range options {
@@ -100,6 +119,20 @@ func (blockExec *BlockExecutor) SetEventBus(eventBus types.BlockEventPublisher) 
 	blockExec.eventBus = eventBus
 }
 
+func (blockExec *BlockExecutor) ConsensusPartSetFromBlock(block *types.Block) *types.PartSet {
+	return blockExec.consensusBlockPartSetFn(block)
+}
+
+func (blockExec *BlockExecutor) HydrateBlockData(ctx context.Context, bl *types.Block) (types.Data, error) {
+	return blockExec.mempool.HydrateBlockData(ctx, bl)
+}
+
+type ProposedBlockResults struct {
+	Block             *types.Block
+	BlockID           types.BlockID
+	ConsensusBlockSet *types.PartSet
+}
+
 // CreateProposalBlock calls state.MakeBlock with evidence from the evpool
 // and txs from the mempool. The max bytes must be big enough to fit the commit.
 // Up to 1/10th of the block space is allcoated for maximum sized evidence.
@@ -108,7 +141,7 @@ func (blockExec *BlockExecutor) CreateProposalBlock(
 	height int64,
 	state State, commit *types.Commit,
 	proposerAddr []byte,
-) (*types.Block, *types.PartSet, error) {
+) (ProposedBlockResults, error) {
 	ctx := context.TODO()
 	maxBytes := state.ConsensusParams.Block.MaxBytes
 	maxGas := state.ConsensusParams.Block.MaxGas
@@ -128,11 +161,16 @@ func (blockExec *BlockExecutor) CreateProposalBlock(
 		mempl.ReapVerify(),
 	)
 	if err != nil {
-		return nil, nil, err
+		return ProposedBlockResults{}, err
 	}
 
 	bl, ps := state.MakeBlockV2(height, reap.Txs, commit, evidence, proposerAddr, reap.Collections)
-	return bl, ps, nil
+
+	return ProposedBlockResults{
+		Block:             bl,
+		BlockID:           types.BlockID{Hash: bl.Hash(), PartSetHeader: ps.Header()},
+		ConsensusBlockSet: blockExec.ConsensusPartSetFromBlock(bl),
+	}, nil
 }
 
 // ValidateBlock validates the given block against the given state.

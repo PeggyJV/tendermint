@@ -33,6 +33,8 @@ type Pool interface {
 	// GlobalCheck will make use of the global callback within the abciclient.Client type.
 	GlobalCheck(tx types.Tx, res *abci.ResponseCheckTx) (OpResult, error)
 
+	HydrateBlockData(ctx context.Context, bl *types.Block) (types.Data, error)
+
 	// Meta returns metadata for the pool.
 	Meta() PoolMeta
 
