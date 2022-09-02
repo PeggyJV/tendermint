@@ -12,7 +12,6 @@ import (
 
 	cfg "github.com/tendermint/tendermint/config"
 	"github.com/tendermint/tendermint/libs/bytes"
-	"github.com/tendermint/tendermint/libs/log"
 	tmrand "github.com/tendermint/tendermint/libs/rand"
 	"github.com/tendermint/tendermint/p2p"
 	"github.com/tendermint/tendermint/privval"
@@ -25,12 +24,12 @@ const (
 )
 
 func (b *builderRoot) testnetCmd() *cobra.Command {
-	bt := builderTestnet{logger: b.logger}
+	bt := builderTestnet{root: b}
 	return bt.cmd()
 }
 
 type builderTestnet struct {
-	logger log.Logger
+	root *builderRoot
 
 	nValidators    int
 	nNonValidators int
@@ -144,7 +143,7 @@ func (b *builderTestnet) testnetFiles(cmd *cobra.Command, args []string) error {
 			return err
 		}
 
-		if err := initFilesWithConfig(config, b.logger); err != nil {
+		if err := initFilesWithConfig(config, b.root.logger); err != nil {
 			return err
 		}
 
@@ -180,7 +179,7 @@ func (b *builderTestnet) testnetFiles(cmd *cobra.Command, args []string) error {
 			return err
 		}
 
-		if err := initFilesWithConfig(config, b.logger); err != nil {
+		if err := initFilesWithConfig(config, b.root.logger); err != nil {
 			return err
 		}
 	}

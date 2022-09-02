@@ -31,29 +31,42 @@ func WithNodeFunc(nodeFn nm.Provider) func(*builderRoot) {
 
 // Cmd provides a full tendermint executable.
 func Cmd(opts ...func(*builderRoot)) cli.Executor {
-	b := builderRoot{
-		cfg:      cfg.DefaultConfig(),
-		nodeFunc: nm.DefaultNewNode,
-	}
-	for _, o := range opts {
-		o(&b)
-	}
+	b := newRootBuilder(opts...)
 
 	cmd := b.cmd()
-	defaultHome := os.ExpandEnv(filepath.Join("$HOME", cfg.DefaultTendermintDir))
-	ex := cli.PrepareBaseCmd(cmd, "TM", defaultHome)
+	ex := cli.PrepareBaseCmd(cmd, "TM", b.homeDir)
 	b.viper = ex.Viper()
 
 	return ex
 }
 
+func WithHomeDir(dir string) func(*builderRoot) {
+	return func(builder *builderRoot) {
+		builder.homeDir = dir
+	}
+}
+
 type builderRoot struct {
-	cfg    *cfg.Config
-	logger log.Logger
-	viper  *viper.Viper
+	cfg     *cfg.Config
+	logger  log.Logger
+	viper   *viper.Viper
+	homeDir string
+	runE    func(cmd *cobra.Command, args []string) error
 
 	genesisHash []byte
 	nodeFunc    nm.Provider
+}
+
+func newRootBuilder(opts ...func(*builderRoot)) *builderRoot {
+	b := builderRoot{
+		cfg:      cfg.DefaultConfig(),
+		nodeFunc: nm.DefaultNewNode,
+		homeDir:  os.ExpandEnv(filepath.Join("$HOME", cfg.DefaultTendermintDir)),
+	}
+	for _, o := range opts {
+		o(&b)
+	}
+	return &b
 }
 
 func (b *builderRoot) cmd() *cobra.Command {
@@ -88,6 +101,7 @@ func (b *builderRoot) cmd() *cobra.Command {
 			b.logger = b.logger.With("module", "main")
 			return nil
 		},
+		RunE: b.runE,
 	}
 
 	cmd.PersistentFlags().String("log_level", b.cfg.LogLevel, "log level")

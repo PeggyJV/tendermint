@@ -3,13 +3,10 @@ package commands
 import (
 	"fmt"
 	"io/ioutil"
-	"os"
 	"path/filepath"
-	"strconv"
 	"testing"
 
 	"github.com/spf13/cobra"
-	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -18,105 +15,59 @@ import (
 	tmos "github.com/tendermint/tendermint/libs/os"
 )
 
-var (
-	defaultRoot = os.ExpandEnv("$HOME/.some/test/dir")
-)
-
-// clearConfig clears env vars, the given root dir, and resets viper.
-func clearConfig(dir string) {
-	if err := os.Unsetenv("TMHOME"); err != nil {
-		panic(err)
-	}
-	if err := os.Unsetenv("TM_HOME"); err != nil {
-		panic(err)
-	}
-
-	if err := os.RemoveAll(dir); err != nil {
-		panic(err)
-	}
-	viper.Reset()
-	config = cfg.DefaultConfig()
-}
-
-// prepare new rootCmd
-func testRootCmd() *cobra.Command {
-	rootCmd := &cobra.Command{
-		Use:               RootCmd.Use,
-		PersistentPreRunE: RootCmd.PersistentPreRunE,
-		Run:               func(cmd *cobra.Command, args []string) {},
-	}
-	registerFlagsRootCmd(rootCmd)
-	var l string
-	rootCmd.PersistentFlags().String("log", l, "Log")
-	return rootCmd
-}
-
-func testSetup(rootDir string, args []string, env map[string]string) error {
-	clearConfig(defaultRoot)
-
-	rootCmd := testRootCmd()
-	cmd := cli.PrepareBaseCmd(rootCmd, "TM", defaultRoot)
-
-	// run with the args and env
-	args = append([]string{rootCmd.Use}, args...)
-	return cli.RunWithArgs(cmd, args, env)
-}
-
 func TestRootHome(t *testing.T) {
-	newRoot := filepath.Join(defaultRoot, "something-else")
+	root, newRoot := t.TempDir(), t.TempDir()
+
 	cases := []struct {
+		name string
 		args []string
 		env  map[string]string
 		root string
 	}{
-		{nil, nil, defaultRoot},
-		{[]string{"--home", newRoot}, nil, newRoot},
-		{nil, map[string]string{"TMHOME": newRoot}, newRoot},
+		{name: "no args or env", root: root},
+		{name: "only args", args: []string{"--home", newRoot}, root: newRoot},
+		{name: "only env", env: map[string]string{"TMHOME": newRoot}, root: newRoot},
 	}
 
-	for i, tc := range cases {
-		idxString := strconv.Itoa(i)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			config := testSetup(t, root, tc.args, tc.env)
 
-		err := testSetup(defaultRoot, tc.args, tc.env)
-		require.Nil(t, err, idxString)
-
-		assert.Equal(t, tc.root, config.RootDir, idxString)
-		assert.Equal(t, tc.root, config.P2P.RootDir, idxString)
-		assert.Equal(t, tc.root, config.Consensus.RootDir, idxString)
-		assert.Equal(t, tc.root, config.Mempool.RootDir, idxString)
+			assert.Equal(t, tc.root, config.RootDir)
+			assert.Equal(t, tc.root, config.P2P.RootDir)
+			assert.Equal(t, tc.root, config.Consensus.RootDir)
+			assert.Equal(t, tc.root, config.Mempool.RootDir)
+		})
 	}
 }
 
 func TestRootFlagsEnv(t *testing.T) {
-
 	// defaults
-	defaults := cfg.DefaultConfig()
-	defaultLogLvl := defaults.LogLevel
+	defaultLogLvl := cfg.DefaultConfig().LogLevel
 
 	cases := []struct {
+		name     string
 		args     []string
 		env      map[string]string
 		logLevel string
 	}{
-		{[]string{"--log", "debug"}, nil, defaultLogLvl},                 // wrong flag
-		{[]string{"--log_level", "debug"}, nil, "debug"},                 // right flag
-		{nil, map[string]string{"TM_LOW": "debug"}, defaultLogLvl},       // wrong env flag
-		{nil, map[string]string{"MT_LOG_LEVEL": "debug"}, defaultLogLvl}, // wrong env prefix
-		{nil, map[string]string{"TM_LOG_LEVEL": "debug"}, "debug"},       // right env
+		{name: "wrong flag", args: []string{"--log", "debug"}, logLevel: defaultLogLvl},
+		{name: "correct flag", args: []string{"--log_level", "debug"}, logLevel: "debug"},
+		{name: "wrong env var", env: map[string]string{"TM_LOW": "debug"}, logLevel: defaultLogLvl},
+		{name: "wrong env prefix", env: map[string]string{"MT_LOG_LEVEL": "debug"}, logLevel: defaultLogLvl},
+		{name: "right env", env: map[string]string{"TM_LOG_LEVEL": "debug"}, logLevel: "debug"},
 	}
 
-	for i, tc := range cases {
-		idxString := strconv.Itoa(i)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			config := testSetup(t, t.TempDir(), tc.args, tc.env)
 
-		err := testSetup(defaultRoot, tc.args, tc.env)
-		require.Nil(t, err, idxString)
-
-		assert.Equal(t, tc.logLevel, config.LogLevel, idxString)
+			assert.Equal(t, tc.logLevel, config.LogLevel)
+		})
 	}
 }
 
 func TestRootConfig(t *testing.T) {
-
 	// write non-default config
 	nonDefaultLogLvl := "abc:debug"
 	cvals := map[string]string{
@@ -124,45 +75,63 @@ func TestRootConfig(t *testing.T) {
 	}
 
 	cases := []struct {
+		name string
 		args []string
 		env  map[string]string
 
 		logLvl string
 	}{
-		{nil, nil, nonDefaultLogLvl},                                     // should load config
-		{[]string{"--log_level=abc:info"}, nil, "abc:info"},              // flag over rides
-		{nil, map[string]string{"TM_LOG_LEVEL": "abc:info"}, "abc:info"}, // env over rides
+		{name: "should load config", logLvl: nonDefaultLogLvl},                                          // should load config
+		{name: "flag overrides", args: []string{"--log_level=abc:info"}, logLvl: "abc:info"},            // flag over rides
+		{name: "env overrides", env: map[string]string{"TM_LOG_LEVEL": "abc:info"}, logLvl: "abc:info"}, // env over rides
 	}
 
-	for i, tc := range cases {
-		idxString := strconv.Itoa(i)
-		clearConfig(defaultRoot)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			// XXX: path must match cfg.defaultConfigPath
+			configFilePath := filepath.Join(dir, "config")
+			err := tmos.EnsureDir(configFilePath, 0700)
+			require.Nil(t, err)
 
-		// XXX: path must match cfg.defaultConfigPath
-		configFilePath := filepath.Join(defaultRoot, "config")
-		err := tmos.EnsureDir(configFilePath, 0700)
-		require.Nil(t, err)
+			// write the non-defaults to a different path
+			// TODO: support writing sub configs so we can test that too
+			err = writeConfigVals(configFilePath, cvals)
+			require.Nil(t, err)
 
-		// write the non-defaults to a different path
-		// TODO: support writing sub configs so we can test that too
-		err = WriteConfigVals(configFilePath, cvals)
-		require.Nil(t, err)
+			config := testSetup(t, dir, tc.args, tc.env)
+			require.Nil(t, err)
 
-		rootCmd := testRootCmd()
-		cmd := cli.PrepareBaseCmd(rootCmd, "TM", defaultRoot)
-
-		// run with the args and env
-		tc.args = append([]string{rootCmd.Use}, tc.args...)
-		err = cli.RunWithArgs(cmd, tc.args, tc.env)
-		require.Nil(t, err, idxString)
-
-		assert.Equal(t, tc.logLvl, config.LogLevel, idxString)
+			assert.Equal(t, tc.logLvl, config.LogLevel)
+		})
 	}
 }
 
-// WriteConfigVals writes a toml file with the given values.
+// prepare new rootCmd
+func testSetup(t *testing.T, rootDir string, args []string, env map[string]string) *cfg.Config {
+	t.Helper()
+
+	var b *builderRoot
+	cmd := Cmd(
+		func(root *builderRoot) {
+			root.runE = func(cmd *cobra.Command, args []string) error {
+				return nil
+			}
+			b = root
+		},
+		WithHomeDir(rootDir),
+	)
+	cmd.Flags().String("log", "", "fake log value")
+
+	// run with the args and env
+	args = append([]string{cmd.Use}, args...)
+	require.NoError(t, cli.RunWithArgs(cmd.Command, args, env))
+	return b.cfg
+}
+
+// writeConfigVals writes a toml file with the given values.
 // It returns an error if writing was impossible.
-func WriteConfigVals(dir string, vals map[string]string) error {
+func writeConfigVals(dir string, vals map[string]string) error {
 	data := ""
 	for k, v := range vals {
 		data += fmt.Sprintf("%s = \"%s\"\n", k, v)
