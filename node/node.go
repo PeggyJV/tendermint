@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	_ "net/http/pprof" // nolint: gosec // securely exposed on separate, optional port
 	"strings"
 	"time"
 
@@ -50,8 +51,6 @@ import (
 	"github.com/tendermint/tendermint/types"
 	tmtime "github.com/tendermint/tendermint/types/time"
 	"github.com/tendermint/tendermint/version"
-
-	_ "net/http/pprof" // nolint: gosec // securely exposed on separate, optional port
 
 	_ "github.com/lib/pq" // provide the psql db driver
 )
@@ -495,6 +494,11 @@ func createConsensusReactor(config *cfg.Config,
 	eventBus *types.EventBus,
 	consensusLogger log.Logger) (*cs.Reactor, *cs.State) {
 
+	stateOpts := []cs.StateOption{cs.StateMetrics(csMetrics)}
+	if config.Consensus.ConsensusStrategy == "meta_only" {
+		stateOpts = append(stateOpts, cs.StateStrategyMetaOnly())
+	}
+
 	consensusState := cs.NewState(
 		config.Consensus,
 		state.Copy(),
@@ -502,7 +506,7 @@ func createConsensusReactor(config *cfg.Config,
 		blockStore,
 		txNotifier,
 		evidencePool,
-		cs.StateMetrics(csMetrics),
+		stateOpts...,
 	)
 	consensusState.SetLogger(consensusLogger)
 	if privValidator != nil {
@@ -827,11 +831,6 @@ func NewNode(config *cfg.Config,
 		return nil, err
 	}
 
-	blockExecOpts := []sm.BlockExecutorOption{sm.BlockExecutorWithMetrics(smMetrics)}
-	if config.Consensus.ConsensusPartSetFnOverride == "sans_data" {
-		blockExecOpts = append(blockExecOpts, sm.BlockExecutorWithConsensusPartsetSansData())
-	}
-
 	// make block executor for consensus and blockchain reactors to execute blocks
 	blockExec := sm.NewBlockExecutor(
 		stateStore,
@@ -839,7 +838,7 @@ func NewNode(config *cfg.Config,
 		proxyApp.Consensus(),
 		mpABCI,
 		evidencePool,
-		blockExecOpts...,
+		sm.BlockExecutorWithMetrics(smMetrics),
 	)
 
 	// Make BlockchainReactor. Don't start fast sync if we're doing a state sync first.

@@ -102,13 +102,16 @@ func (bcR *BlockchainReactor) SetLogger(l log.Logger) {
 
 // OnStart implements service.Service.
 func (bcR *BlockchainReactor) OnStart() error {
-	if bcR.fastSync {
-		err := bcR.pool.Start()
-		if err != nil {
-			return err
-		}
-		go bcR.poolRoutine(false)
+	if !bcR.fastSync {
+		return nil
 	}
+
+	if err := bcR.pool.Start(); err != nil {
+		return err
+	}
+
+	go bcR.poolRoutine(false)
+
 	return nil
 }
 
@@ -314,23 +317,8 @@ FOR_LOOP:
 	for {
 		select {
 		case <-switchToConsensusTicker.C:
-			height, numPending, lenRequesters := bcR.pool.GetStatus()
-			outbound, inbound, _ := bcR.Switch.NumPeers()
-			bcR.Logger.Debug("Consensus ticker", "numPending", numPending, "total", lenRequesters,
-				"outbound", outbound, "inbound", inbound)
-			if bcR.pool.IsCaughtUp() {
-				bcR.Logger.Info("Time to switch to consensus reactor!", "height", height)
-				if err := bcR.pool.Stop(); err != nil {
-					bcR.Logger.Error("Error stopping pool", "err", err)
-				}
-				conR, ok := bcR.Switch.Reactor("CONSENSUS").(consensusReactor)
-				if ok {
-					conR.SwitchToConsensus(state, blocksSynced > 0 || stateSynced)
-				}
-				// else {
-				// should only happen during testing
-				// }
-
+			skipWAL := blocksSynced > 0 || stateSynced
+			if !bcR.switchToConsensusCheck(state, skipWAL) {
 				break FOR_LOOP
 			}
 
@@ -341,80 +329,117 @@ FOR_LOOP:
 			}
 
 		case <-didProcessCh:
-			// NOTE: It is a subtle mistake to process more than a single block
-			// at a time (e.g. 10) here, because we only TrySend 1 request per
-			// loop.  The ratio mismatch can result in starving of blocks, a
-			// sudden burst of requests and responses, and repeat.
-			// Consequently, it is better to split these routines rather than
-			// coupling them as it's written here.  TODO uncouple from request
-			// routine.
-
-			// See if there are any blocks to sync.
-			first, second := bcR.pool.PeekTwoBlocks()
-			// bcR.Logger.Info("TrySync peeked", "first", first, "second", second)
-			if first == nil || second == nil {
-				// We need both to sync the first block.
+			blockAdded, newState := bcR.trySync(state, chainID, didProcessCh)
+			if !blockAdded {
 				continue FOR_LOOP
-			} else {
-				// Try again quickly next loop.
-				didProcessCh <- struct{}{}
 			}
+			state = newState
 
-			firstParts := first.MakePartSet(types.BlockPartSizeBytes)
-			firstPartSetHeader := firstParts.Header()
-			firstID := types.BlockID{Hash: first.Hash(), PartSetHeader: firstPartSetHeader}
-			// Finally, verify the first block using the second's commit
-			// NOTE: we can probably make this more efficient, but note that calling
-			// first.Hash() doesn't verify the tx contents, so MakePartSet() is
-			// currently necessary.
-			err := state.Validators.VerifyCommitLight(
-				chainID, firstID, first.Height, second.LastCommit)
-			if err != nil {
-				bcR.Logger.Error("Error in validation", "err", err)
-				peerID := bcR.pool.RedoRequest(first.Height)
-				peer := bcR.Switch.Peers().Get(peerID)
-				if peer != nil {
-					// NOTE: we've already removed the peer's request, but we
-					// still need to clean up the rest.
-					bcR.Switch.StopPeerForError(peer, fmt.Errorf("blockchainReactor validation error: %v", err))
-				}
-				peerID2 := bcR.pool.RedoRequest(second.Height)
-				peer2 := bcR.Switch.Peers().Get(peerID2)
-				if peer2 != nil && peer2 != peer {
-					// NOTE: we've already removed the peer's request, but we
-					// still need to clean up the rest.
-					bcR.Switch.StopPeerForError(peer2, fmt.Errorf("blockchainReactor validation error: %v", err))
-				}
-				continue FOR_LOOP
-			} else {
-				bcR.pool.PopRequest()
-
-				// TODO: batch saves so we dont persist to disk every block
-				bcR.store.SaveBlock(first, firstParts, second.LastCommit)
-
-				// TODO: same thing for app - but we would need a way to
-				// get the hash without persisting the state
-				var err error
-				state, _, err = bcR.blockExec.ApplyBlock(state, firstID, first)
-				if err != nil {
-					// TODO This is bad, are we zombie?
-					panic(fmt.Sprintf("Failed to process committed block (%d:%X): %v", first.Height, first.Hash(), err))
-				}
-				blocksSynced++
-
-				if blocksSynced%100 == 0 {
-					lastRate = 0.9*lastRate + 0.1*(100/time.Since(lastHundred).Seconds())
-					bcR.Logger.Info("Fast Sync Rate", "height", bcR.pool.height,
-						"max_peer_height", bcR.pool.MaxPeerHeight(), "blocks/s", lastRate)
-					lastHundred = time.Now()
-				}
+			blocksSynced++
+			if blocksSynced%100 == 0 {
+				lastRate = 0.9*lastRate + 0.1*(100/time.Since(lastHundred).Seconds())
+				bcR.Logger.Info("Fast Sync Rate", "height", bcR.pool.height,
+					"max_peer_height", bcR.pool.MaxPeerHeight(), "blocks/s", lastRate)
+				lastHundred = time.Now()
 			}
-			continue FOR_LOOP
-
 		case <-bcR.Quit():
 			break FOR_LOOP
 		}
 	}
+}
+
+func (bcR *BlockchainReactor) switchToConsensusCheck(state sm.State, skipWAL bool) (shouldContinue bool) {
+	height, numPending, lenRequesters := bcR.pool.GetStatus()
+	outbound, inbound, _ := bcR.Switch.NumPeers()
+	bcR.Logger.Debug("Consensus ticker",
+		"numPending", numPending,
+		"total", lenRequesters,
+		"outbound", outbound,
+		"inbound", inbound,
+	)
+
+	if !bcR.pool.IsCaughtUp() {
+		return true
+	}
+
+	bcR.Logger.Info("Time to switch to consensus reactor!", "height", height)
+	if err := bcR.pool.Stop(); err != nil {
+		bcR.Logger.Error("Error stopping pool", "err", err)
+	}
+	conR, ok := bcR.Switch.Reactor("CONSENSUS").(consensusReactor)
+	if ok {
+		conR.SwitchToConsensus(state, skipWAL)
+	}
+	// else {
+	// should only happen during testing
+	// }
+
+	return false
+}
+
+func (bcR *BlockchainReactor) trySync(state sm.State, chainID string, didProcessCh chan<- struct{}) (addedBlock bool, _ sm.State) {
+	// NOTE: It is a subtle mistake to process more than a single block
+	// at a time (e.g. 10) here, because we only TrySend 1 request per
+	// loop.  The ratio mismatch can result in starving of blocks, a
+	// sudden burst of requests and responses, and repeat.
+	// Consequently, it is better to split these routines rather than
+	// coupling them as it's written here.  TODO uncouple from request
+	// routine.
+
+	// See if there are any blocks to sync.
+	first, second := bcR.pool.PeekTwoBlocks()
+	// bcR.Logger.Info("TrySync peeked", "first", first, "second", second)
+	if first == nil || second == nil {
+		// We need both to sync the first block.
+		return false, state
+	} else {
+		// Try again quickly next loop.
+		didProcessCh <- struct{}{}
+	}
+
+	firstParts := first.MakePartSet(types.BlockPartSizeBytes)
+	firstPartSetHeader := firstParts.Header()
+	firstID := types.BlockID{Hash: first.Hash(), PartSetHeader: firstPartSetHeader}
+
+	// Finally, verify the first block using the second's commit
+	// NOTE: we can probably make this more efficient, but note that calling
+	// first.Hash() doesn't verify the tx contents, so MakePartSet() is
+	// currently necessary.
+	err := state.Validators.VerifyCommitLight(chainID, firstID, first.Height, second.LastCommit)
+	if err != nil {
+		bcR.Logger.Error("Error in validation", "err", err)
+		peerID := bcR.pool.RedoRequest(first.Height)
+		peer := bcR.Switch.Peers().Get(peerID)
+		if peer != nil {
+			// NOTE: we've already removed the peer's request, but we
+			// still need to clean up the rest.
+			bcR.Switch.StopPeerForError(peer, fmt.Errorf("blockchainReactor validation error: %v", err))
+		}
+
+		peerID2 := bcR.pool.RedoRequest(second.Height)
+		peer2 := bcR.Switch.Peers().Get(peerID2)
+		if peer2 != nil && peer2 != peer {
+			// NOTE: we've already removed the peer's request, but we
+			// still need to clean up the rest.
+			bcR.Switch.StopPeerForError(peer2, fmt.Errorf("blockchainReactor validation error: %v", err))
+		}
+		return false, state
+	}
+
+	bcR.pool.PopRequest()
+
+	// TODO: batch saves so we dont persist to disk every block
+	bcR.store.SaveBlock(first, firstParts, second.LastCommit)
+
+	// TODO: same thing for app - but we would need a way to
+	// get the hash without persisting the state
+	state, _, err = bcR.blockExec.ApplyBlock(state, firstID, first)
+	if err != nil {
+		// TODO This is bad, are we zombie?
+		panic(fmt.Sprintf("Failed to process committed block (%d:%X): %v", first.Height, first.Hash(), err))
+	}
+
+	return true, state
 }
 
 // BroadcastStatusRequest broadcasts `BlockStore` base and height.

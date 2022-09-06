@@ -953,7 +953,7 @@ type ConsensusConfig struct {
 
 	DoubleSignCheckHeight int64 `mapstructure:"double_sign_check_height"`
 
-	ConsensusPartSetFnOverride string `mapstructure:"consensus_part_set_override"`
+	ConsensusStrategy string `mapstructure:"consensus_strategy"`
 }
 
 // DefaultConsensusConfig returns a default configuration for the consensus service

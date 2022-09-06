@@ -134,6 +134,10 @@ func (b *Block) Hash() tmbytes.HexBytes {
 	return b.Header.Hash()
 }
 
+func (b *Block) MakeDefaultPartSet() *PartSet {
+	return b.MakePartSet(BlockPartSizeBytes)
+}
+
 // MakePartSet returns a PartSet containing parts of a serialized block.
 // This is the form in which the block is gossipped to peers.
 // CONTRACT: partSize is greater than zero.

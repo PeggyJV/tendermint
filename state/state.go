@@ -248,19 +248,20 @@ func (state State) MakeBlockV2(
 	txs types.Txs,
 	commit *types.Commit,
 	evidence []types.Evidence,
-	proposerAddress []byte,
+	proposerAddr []byte,
 	colls *types.DAGCollections,
-) (*types.Block, *types.PartSet) {
+) *types.Block {
 	block := types.MakeBlockV2(height, txs, commit, evidence, colls)
-	return state.makeBlockPartSet(block, height, commit, proposerAddress)
+	state.populateBlockHeader(block, height, commit, proposerAddr)
+	return block
 }
 
-func (state State) makeBlockPartSet(
+func (state State) populateBlockHeader(
 	block *types.Block,
 	height int64,
 	commit *types.Commit,
 	proposerAddr []byte,
-) (*types.Block, *types.PartSet) {
+) {
 	// Set time.
 	var timestamp time.Time
 	if height == state.InitialHeight {
@@ -278,7 +279,15 @@ func (state State) makeBlockPartSet(
 		types.HashConsensusParams(state.ConsensusParams), state.AppHash, state.LastResultsHash,
 		proposerAddr,
 	)
+}
 
+func (state State) makeBlockPartSet(
+	block *types.Block,
+	height int64,
+	commit *types.Commit,
+	proposerAddr []byte,
+) (*types.Block, *types.PartSet) {
+	state.populateBlockHeader(block, height, commit, proposerAddr)
 	return block, block.MakePartSet(types.BlockPartSizeBytes)
 }
 

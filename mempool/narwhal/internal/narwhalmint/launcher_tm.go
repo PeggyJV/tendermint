@@ -201,7 +201,7 @@ func (l *LauncherTendermint) runTMValidatorCmd(
 	readyStream chan<- readyMsg,
 	fn func(ctx context.Context, mr io.Writer, args []string) error,
 ) error {
-	f, closeFn, err := newLogFileWriter(l.dirs.nodeLogFile(nodeName, nodeName))
+	f, closeFn, err := newLogFileWriter(l.dirs.nodeLogFile(nodeName, nodeName+".logs"))
 	if err != nil {
 		return fmt.Errorf("failed to create log file: %w", err)
 	}
@@ -333,7 +333,7 @@ func (l *LauncherTendermint) setupTMFS(cfg *config.Config, now time.Time, narwha
 		if err := genDoc.SaveAs(cfg.GenesisFile()); err != nil {
 			return nil, fmt.Errorf("failed to save genesis doc: %w", err)
 		}
-		cfg.Consensus.ConsensusPartSetFnOverride = "sans_data"
+		cfg.Consensus.ConsensusStrategy = "meta_only"
 		cfg.Narwhal = narwhalCFG
 		cfg.RPC.ListenAddress = newListenAddr(node.rpc)
 		cfg.P2P.ListenAddress = newListenAddr(node.p2p)

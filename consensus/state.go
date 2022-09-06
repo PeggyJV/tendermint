@@ -72,6 +72,21 @@ type evidencePool interface {
 	ReportConflictingVotes(voteA, voteB *types.Vote)
 }
 
+// StateMetrics sets the metrics.
+func StateMetrics(metrics *Metrics) StateOption {
+	return func(cs *State) { cs.metrics = metrics }
+}
+
+func StateStrategyMetaOnly() StateOption {
+	return StateStrategy(strategyMetaOnly{})
+}
+
+func StateStrategy(strategy Strategy) StateOption {
+	return func(state *State) {
+		state.strategy = strategy
+	}
+}
+
 // State handles execution of the consensus algorithm.
 // It processes votes and proposals, and upon reaching agreement,
 // commits blocks to the chain and executes them against the application.
@@ -88,6 +103,9 @@ type State struct {
 
 	// create and execute blocks
 	blockExec *sm.BlockExecutor
+
+	// the strategy for consensus gossip.
+	strategy Strategy
 
 	// notify us if txs are available
 	txNotifier TxNotifier
@@ -160,6 +178,7 @@ func NewState(
 		config:           config,
 		blockExec:        blockExec,
 		blockStore:       blockStore,
+		strategy:         strategyFull{},
 		txNotifier:       txNotifier,
 		peerMsgQueue:     make(chan msgInfo, msgQueueSize),
 		internalMsgQueue: make(chan msgInfo, msgQueueSize),
@@ -205,11 +224,6 @@ func (cs *State) SetLogger(l log.Logger) {
 func (cs *State) SetEventBus(b *types.EventBus) {
 	cs.eventBus = b
 	cs.blockExec.SetEventBus(b)
-}
-
-// StateMetrics sets the metrics.
-func StateMetrics(metrics *Metrics) StateOption {
-	return func(cs *State) { cs.metrics = metrics }
 }
 
 // String returns a string.
@@ -829,7 +843,6 @@ func (cs *State) handleMsg(mi msgInfo) {
 				"err", err,
 				"height", cs.Height,
 				"cs_round", cs.Round,
-				"consensus_partset", cs.ConsensusPartSet.StringShort(),
 				"part_idx", msg.Part.Index,
 				"block_round", msg.Round,
 			)
@@ -1122,14 +1135,14 @@ func (cs *State) defaultDecideProposal(height int64, round int32) {
 			Hash:          block.Hash(),
 			PartSetHeader: cs.ValidBlockParts.Header(),
 		}
-		consensusBlockParts = cs.blockExec.ConsensusPartSetFromBlock(block)
+		consensusBlockParts = cs.strategy.ConsensusPartSetFromBlock(block)
 	} else {
 		// Create a new proposal block from state/txs from the mempool.
 		res := cs.createProposalBlock()
 		if res.Block == nil {
 			return
 		}
-		block, propBlockID, consensusBlockParts = res.Block, res.BlockID, res.ConsensusBlockSet
+		block, propBlockID, consensusBlockParts = res.Block, res.BlockID, res.ConsensusPartSet
 	}
 
 	// Flush the WAL. Otherwise, we may not recompute the same proposal to sign,
@@ -1181,7 +1194,7 @@ func (cs *State) isProposalComplete() bool {
 //
 // NOTE: keep it side-effect free for clarity.
 // CONTRACT: cs.privValidator is not nil.
-func (cs *State) createProposalBlock() sm.ProposedBlockResults {
+func (cs *State) createProposalBlock() ProposedBlockData {
 	if cs.privValidator == nil {
 		panic("entered createProposalBlock with privValidator being nil")
 	}
@@ -1199,19 +1212,26 @@ func (cs *State) createProposalBlock() sm.ProposedBlockResults {
 
 	default: // This shouldn't happen.
 		cs.Logger.Error("propose step; cannot propose anything without commit for the previous block")
-		return sm.ProposedBlockResults{}
+		return ProposedBlockData{}
 	}
 
 	if cs.privValidatorPubKey == nil {
 		// If this node is a validator & proposer in the current round, it will
 		// miss the opportunity to create a block.
 		cs.Logger.Error("propose step; empty priv validator public key", "err", errPubKeyIsNotSet)
-		return sm.ProposedBlockResults{}
+		return ProposedBlockData{}
 	}
 
 	proposerAddr := cs.privValidatorPubKey.Address()
 
-	res, err := cs.blockExec.CreateProposalBlock(cs.Height, cs.state, commit, proposerAddr)
+	res, err := cs.strategy.CreateProposalBlock(
+		context.TODO(),
+		cs.blockExec,
+		cs.Height,
+		cs.state,
+		commit,
+		proposerAddr,
+	)
 	if err != nil {
 		cs.Logger.Error("failed to create proposed block",
 			"err", err,
@@ -1617,7 +1637,7 @@ func (cs *State) finalizeCommit(height int64) {
 		precommits := cs.Votes.Precommits(cs.CommitRound)
 		seenCommit := precommits.MakeCommit()
 
-		cs.blockStore.SaveBlock(block, blockParts, seenCommit)
+		cs.strategy.SaveBlock(cs.blockStore, block, blockParts, seenCommit)
 	} else {
 		// Happens during replay if we already saved the block but didn't commit
 		logger.Debug("calling finalizeCommit on already stored block", "height", block.Height)
@@ -1831,20 +1851,18 @@ func (cs *State) defaultSetProposal(proposal *types.Proposal) error {
 
 	p := proposal.ToProto()
 	// Verify signature
-	if !cs.Validators.GetProposer().PubKey.VerifySignature(
+	isVerified := cs.Validators.GetProposer().PubKey.VerifySignature(
 		types.ProposalSignBytes(cs.state.ChainID, p), proposal.Signature,
-	) {
+	)
+	if !isVerified {
 		return ErrInvalidProposalSignature
 	}
 
 	proposal.Signature = p.Signature
 	cs.Proposal = proposal
-	// We don't update cs.ProposalBlockParts if it is already set.
+	// We don't update cs.ConsensusPartSet if it is already set.
 	// This happens if we're already in cstypes.RoundStepCommit or if there is a valid block in the current round.
 	// TODO: We can check if Proposal is for a different block as this is a sign of misbehavior!
-	if cs.ProposalBlockParts == nil {
-		cs.ProposalBlockParts = types.NewPartSetFromHeader(proposal.BlockID.PartSetHeader)
-	}
 	if cs.ConsensusPartSet == nil {
 		cs.ConsensusPartSet = types.NewPartSetFromHeader(proposal.ConsensusPartSetHeader)
 	}
@@ -1865,8 +1883,9 @@ func (cs *State) addProposalBlockPart(msg *BlockPartMessage, peerID p2p.ID) (add
 		return false, nil
 	}
 
+	csPS := cs.ConsensusPartSet
 	// We're not expecting a block part.
-	if cs.ConsensusPartSet == nil {
+	if csPS == nil {
 		// NOTE: this can happen when we've gone to a higher round and
 		// then receive parts from the previous round - not necessarily a bad peer.
 		cs.Logger.Debug(
@@ -1879,83 +1898,81 @@ func (cs *State) addProposalBlockPart(msg *BlockPartMessage, peerID p2p.ID) (add
 		return false, nil
 	}
 
-	added, err = cs.ConsensusPartSet.AddPart(part)
+	added, err = csPS.AddPart(part)
 	if err != nil {
 		return added, err
 	}
-	if bs := cs.ConsensusPartSet.ByteSize(); bs > cs.state.ConsensusParams.Block.MaxBytes {
+
+	// TODO(berg): will need to address this, within narwhal, this limit is basicaly
+	//				unreachable at this time.
+	if bs := csPS.ByteSize(); bs > cs.state.ConsensusParams.Block.MaxBytes {
 		return added, fmt.Errorf("total size of proposal block parts exceeds maximum block bytes (%d > %d)",
 			bs, cs.state.ConsensusParams.Block.MaxBytes,
 		)
 	}
-	if added && cs.ConsensusPartSet.IsComplete() {
-		bz, err := io.ReadAll(cs.ConsensusPartSet.GetReader())
-		if err != nil {
-			return added, err
-		}
-
-		var pbb = new(tmproto.Block)
-		err = proto.Unmarshal(bz, pbb)
-		if err != nil {
-			return added, err
-		}
-
-		block, err := types.BlockFromProto(pbb)
-		if err != nil {
-			return added, err
-		}
-
-		data, err := cs.blockExec.HydrateBlockData(context.TODO(), block)
-		if err != nil {
-			return added, err
-		}
-		block.Data = data
-
-		cs.ProposalBlock = block
-		// TODO(berg): clean this up, shouldn't have make part set in multiple places...
-		cs.ProposalBlockParts = block.MakePartSet(types.BlockPartSizeBytes)
-
-		// NOTE: it's possible to receive complete proposal blocks for future rounds without having the proposal
-		cs.Logger.Info("received complete proposal block", "height", cs.ProposalBlock.Height, "hash", cs.ProposalBlock.Hash(), "num_txs", len(cs.ProposalBlock.Txs))
-
-		if err := cs.eventBus.PublishEventCompleteProposal(cs.CompleteProposalEvent()); err != nil {
-			cs.Logger.Error("failed publishing event complete proposal", "err", err)
-		}
-
-		// Update Valid* if we can.
-		prevotes := cs.Votes.Prevotes(cs.Round)
-		blockID, hasTwoThirds := prevotes.TwoThirdsMajority()
-		if hasTwoThirds && !blockID.IsZero() && (cs.ValidRound < cs.Round) {
-			if cs.ProposalBlock.HashesTo(blockID.Hash) {
-				cs.Logger.Debug(
-					"updating valid block to new proposal block",
-					"valid_round", cs.Round,
-					"valid_block_hash", cs.ProposalBlock.Hash(),
-				)
-
-				cs.ValidRound = cs.Round
-				cs.ValidBlock = cs.ProposalBlock
-				cs.ValidBlockParts = cs.ProposalBlockParts
-			}
-			// TODO: In case there is +2/3 majority in Prevotes set for some
-			// block and cs.ProposalBlock contains different block, either
-			// proposer is faulty or voting power of faulty processes is more
-			// than 1/3. We should trigger in the future accountability
-			// procedure at this point.
-		}
-
-		if cs.Step <= cstypes.RoundStepPropose && cs.isProposalComplete() {
-			// Move onto the next step
-			cs.enterPrevote(height, cs.Round)
-			if hasTwoThirds { // this is optimisation as this will be triggered when prevote is added
-				cs.enterPrecommit(height, cs.Round)
-			}
-		} else if cs.Step == cstypes.RoundStepCommit {
-			// If we're waiting on the proposal block...
-			cs.tryFinalizeCommit(height)
-		}
-
+	if !(added && csPS.IsComplete()) {
 		return added, nil
+	}
+
+	bz, err := io.ReadAll(csPS.GetReader())
+	if err != nil {
+		return added, err
+	}
+
+	var pbb = new(tmproto.Block)
+	err = proto.Unmarshal(bz, pbb)
+	if err != nil {
+		return added, err
+	}
+
+	block, err := types.BlockFromProto(pbb)
+	if err != nil {
+		return added, err
+	}
+
+	err = cs.strategy.SetRoundStateProposalData(context.TODO(), cs.blockExec, &cs.RoundState, block)
+	if err != nil {
+		return added, err
+	}
+
+	// NOTE: it's possible to receive complete proposal blocks for future rounds without having the proposal
+	cs.Logger.Info("received complete proposal block", "height", cs.ProposalBlock.Height, "hash", cs.ProposalBlock.Hash(), "num_txs", len(cs.ProposalBlock.Txs))
+
+	if err := cs.eventBus.PublishEventCompleteProposal(cs.CompleteProposalEvent()); err != nil {
+		cs.Logger.Error("failed publishing event complete proposal", "err", err)
+	}
+
+	// Update Valid* if we can.
+	prevotes := cs.Votes.Prevotes(cs.Round)
+	blockID, hasTwoThirds := prevotes.TwoThirdsMajority()
+	if hasTwoThirds && !blockID.IsZero() && (cs.ValidRound < cs.Round) {
+		if cs.ProposalBlock.HashesTo(blockID.Hash) {
+			cs.Logger.Debug(
+				"updating valid block to new proposal block",
+				"valid_round", cs.Round,
+				"valid_block_hash", cs.ProposalBlock.Hash(),
+			)
+
+			cs.ValidRound = cs.Round
+			cs.ValidBlock = cs.ProposalBlock
+			cs.ValidBlockParts = cs.ProposalBlockParts
+		}
+		// TODO: In case there is +2/3 majority in Prevotes set for some
+		// block and cs.ProposalBlock contains different block, either
+		// proposer is faulty or voting power of faulty processes is more
+		// than 1/3. We should trigger in the future accountability
+		// procedure at this point.
+	}
+
+	if cs.Step <= cstypes.RoundStepPropose && cs.isProposalComplete() {
+		// Move onto the next step
+		cs.enterPrevote(height, cs.Round)
+		if hasTwoThirds { // this is optimisation as this will be triggered when prevote is added
+			cs.enterPrecommit(height, cs.Round)
+		}
+	} else if cs.Step == cstypes.RoundStepCommit {
+		// If we're waiting on the proposal block...
+		cs.tryFinalizeCommit(height)
 	}
 
 	return added, nil

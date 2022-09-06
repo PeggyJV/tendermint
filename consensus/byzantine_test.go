@@ -36,6 +36,8 @@ func TestByzantinePrevoteEquivocation(t *testing.T) {
 	const nValidators = 4
 	const byzantineNode = 0
 	const prevoteHeight = int64(2)
+
+	ctx := context.TODO()
 	testName := "consensus_byzantine_test"
 	tickerFunc := newMockTickerFunc(true)
 	appFunc := newCounter
@@ -198,8 +200,8 @@ func TestByzantinePrevoteEquivocation(t *testing.T) {
 		}
 		proposerAddr := lazyProposer.privValidatorPubKey.Address()
 
-		res, err := lazyProposer.blockExec.CreateProposalBlock(
-			lazyProposer.Height, lazyProposer.state, commit, proposerAddr,
+		block, err := lazyProposer.blockExec.CreateProposalBlock(
+			ctx, lazyProposer.Height, lazyProposer.state, commit, proposerAddr,
 		)
 		require.NoError(t, err)
 
@@ -209,7 +211,7 @@ func TestByzantinePrevoteEquivocation(t *testing.T) {
 			lazyProposer.Logger.Error("Error flushing to disk")
 		}
 
-		block, blockParts := res.Block, res.Block.MakePartSet(types.BlockPartSizeBytes)
+		blockParts := block.MakeDefaultPartSet()
 
 		// Make proposal
 		propBlockID := types.BlockID{Hash: block.Hash(), PartSetHeader: blockParts.Header()}

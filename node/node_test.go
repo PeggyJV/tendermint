@@ -301,14 +301,13 @@ func TestCreateProposalBlock(t *testing.T) {
 	)
 
 	commit := types.NewCommit(height-1, 0, types.BlockID{}, nil)
-	res, err := blockExec.CreateProposalBlock(
+	block, err := blockExec.CreateProposalBlock(
+		ctx,
 		height,
 		state, commit,
 		proposerAddr,
 	)
 	require.NoError(t, err)
-
-	block := res.Block
 
 	// check that the part set does not exceed the maximum block size
 	partSet := block.MakePartSet(partSize)
@@ -380,14 +379,13 @@ func TestMaxProposalBlockSize(t *testing.T) {
 	)
 
 	commit := types.NewCommit(height-1, 0, types.BlockID{}, nil)
-	res, err := blockExec.CreateProposalBlock(
+	block, err := blockExec.CreateProposalBlock(
+		ctx,
 		height,
 		state, commit,
 		proposerAddr,
 	)
 	require.NoError(t, err)
-
-	block := res.Block
 
 	pb, err := block.ToProto()
 	require.NoError(t, err)

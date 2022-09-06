@@ -10,19 +10,25 @@ import (
 
 // BlockMeta contains meta information.
 type BlockMeta struct {
-	BlockID   BlockID `json:"block_id"`
-	BlockSize int     `json:"block_size"`
-	Header    Header  `json:"header"`
-	NumTxs    int     `json:"num_txs"`
+	BlockID                BlockID       `json:"block_id"`
+	BlockSize              int           `json:"block_size"`
+	ConsensusPartSetHeader PartSetHeader `json:"consensus_part_set_header"`
+	Header                 Header        `json:"header"`
+	NumTxs                 int           `json:"num_txs"`
 }
 
 // NewBlockMeta returns a new BlockMeta.
 func NewBlockMeta(block *Block, blockParts *PartSet) *BlockMeta {
+	return NewBlockMetaV2(block, blockParts, PartSetHeader{})
+}
+
+func NewBlockMetaV2(block *Block, blockParts *PartSet, consensusPartSetHeader PartSetHeader) *BlockMeta {
 	return &BlockMeta{
-		BlockID:   BlockID{block.Hash(), blockParts.Header()},
-		BlockSize: block.Size(),
-		Header:    block.Header,
-		NumTxs:    len(block.Data.Txs),
+		BlockID:                BlockID{block.Hash(), blockParts.Header()},
+		BlockSize:              block.Size(),
+		ConsensusPartSetHeader: consensusPartSetHeader,
+		Header:                 block.Header,
+		NumTxs:                 len(block.Data.Txs),
 	}
 }
 
@@ -31,21 +37,19 @@ func (bm *BlockMeta) ToProto() *tmproto.BlockMeta {
 		return nil
 	}
 
-	pb := &tmproto.BlockMeta{
-		BlockID:   bm.BlockID.ToProto(),
-		BlockSize: int64(bm.BlockSize),
-		Header:    *bm.Header.ToProto(),
-		NumTxs:    int64(bm.NumTxs),
+	return &tmproto.BlockMeta{
+		BlockID:                bm.BlockID.ToProto(),
+		BlockSize:              int64(bm.BlockSize),
+		ConsensusPartSetHeader: bm.ConsensusPartSetHeader.ToProto(),
+		Header:                 *bm.Header.ToProto(),
+		NumTxs:                 int64(bm.NumTxs),
 	}
-	return pb
 }
 
 func BlockMetaFromProto(pb *tmproto.BlockMeta) (*BlockMeta, error) {
 	if pb == nil {
 		return nil, errors.New("blockmeta is empty")
 	}
-
-	bm := new(BlockMeta)
 
 	bi, err := BlockIDFromProto(&pb.BlockID)
 	if err != nil {
@@ -57,10 +61,18 @@ func BlockMetaFromProto(pb *tmproto.BlockMeta) (*BlockMeta, error) {
 		return nil, err
 	}
 
-	bm.BlockID = *bi
-	bm.BlockSize = int(pb.BlockSize)
-	bm.Header = h
-	bm.NumTxs = int(pb.NumTxs)
+	psh, err := PartSetHeaderFromProto(&pb.ConsensusPartSetHeader)
+	if err != nil {
+		return nil, err
+	}
+
+	bm := &BlockMeta{
+		BlockID:                *bi,
+		BlockSize:              int(pb.BlockSize),
+		ConsensusPartSetHeader: *psh,
+		Header:                 h,
+		NumTxs:                 int(pb.NumTxs),
+	}
 
 	return bm, bm.ValidateBasic()
 }

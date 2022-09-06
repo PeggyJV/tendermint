@@ -147,9 +147,13 @@ func (bs *BlockStore) LoadBlockByHash(hash []byte) *types.Block {
 // from the block at the given height.
 // If no part is found for the given height and index, it returns nil.
 func (bs *BlockStore) LoadBlockPart(height int64, index int) *types.Part {
+	return bs.loadPart(calcBlockPartKey(height, index))
+}
+
+func (bs *BlockStore) loadPart(key []byte) *types.Part {
 	var pbpart = new(tmproto.Part)
 
-	bz, err := bs.db.Get(calcBlockPartKey(height, index))
+	bz, err := bs.db.Get(key)
 	if err != nil {
 		panic(err)
 	}
@@ -172,7 +176,6 @@ func (bs *BlockStore) LoadBlockPart(height int64, index int) *types.Part {
 // LoadBlockMeta returns the BlockMeta for the given height.
 // If no block is found for the given height, it returns nil.
 func (bs *BlockStore) LoadBlockMeta(height int64) *types.BlockMeta {
-	var pbbm = new(tmproto.BlockMeta)
 	bz, err := bs.db.Get(calcBlockMetaKey(height))
 
 	if err != nil {
@@ -183,12 +186,13 @@ func (bs *BlockStore) LoadBlockMeta(height int64) *types.BlockMeta {
 		return nil
 	}
 
-	err = proto.Unmarshal(bz, pbbm)
+	var pbbm tmproto.BlockMeta
+	err = proto.Unmarshal(bz, &pbbm)
 	if err != nil {
 		panic(fmt.Errorf("unmarshal to tmproto.BlockMeta: %w", err))
 	}
 
-	blockMeta, err := types.BlockMetaFromProto(pbbm)
+	blockMeta, err := types.BlockMetaFromProto(&pbbm)
 	if err != nil {
 		panic(fmt.Errorf("error from proto blockMeta: %w", err))
 	}
@@ -218,6 +222,10 @@ func (bs *BlockStore) LoadBlockCommit(height int64) *types.Commit {
 		panic(fmt.Sprintf("Error reading block commit: %v", err))
 	}
 	return commit
+}
+
+func (bs *BlockStore) LoadBlockConsensusPartSetPart(height int64, index int) *types.Part {
+	return bs.loadPart(calcBlockConsensusPartKey(height, index))
 }
 
 // LoadSeenCommit returns the locally seen Commit for the given height.
@@ -329,6 +337,14 @@ func (bs *BlockStore) PruneBlocks(height int64) (uint64, error) {
 //             we need this to reload the precommits to catch-up nodes to the
 //             most recent height.  Otherwise they'd stall at H-1.
 func (bs *BlockStore) SaveBlock(block *types.Block, blockParts *types.PartSet, seenCommit *types.Commit) {
+	bs.saveBlock(block, nil, blockParts, seenCommit)
+}
+
+func (bs *BlockStore) SaveBlockV2(block *types.Block, consensusPartSet, fullParts *types.PartSet, seenCommit *types.Commit) {
+	bs.saveBlock(block, consensusPartSet, fullParts, seenCommit)
+}
+
+func (bs *BlockStore) saveBlock(block *types.Block, consensusPartSet, fullParts *types.PartSet, seenCommit *types.Commit) {
 	if block == nil {
 		panic("BlockStore can only save a non-nil block")
 	}
@@ -339,21 +355,23 @@ func (bs *BlockStore) SaveBlock(block *types.Block, blockParts *types.PartSet, s
 	if g, w := height, bs.Height()+1; bs.Base() > 0 && g != w {
 		panic(fmt.Sprintf("BlockStore can only save contiguous blocks. Wanted %v, got %v", w, g))
 	}
-	if !blockParts.IsComplete() {
+	if !fullParts.IsComplete() {
 		panic("BlockStore can only save complete block part sets")
 	}
 
-	// Save block parts. This must be done before the block meta, since callers
+	// Save block part set(s). This must be done before the block meta, since callers
 	// typically load the block meta first as an indication that the block exists
 	// and then go on to load block parts - we must make sure the block is
 	// complete as soon as the block meta is written.
-	for i := 0; i < int(blockParts.Total()); i++ {
-		part := blockParts.GetPart(i)
+	for i := 0; i < int(fullParts.Total()); i++ {
+		part := fullParts.GetPart(i)
 		bs.saveBlockPart(height, i, part)
 	}
 
 	// Save block meta
-	blockMeta := types.NewBlockMeta(block, blockParts)
+	cpsh := bs.saveConsensusPartSet(height, consensusPartSet)
+
+	blockMeta := types.NewBlockMetaV2(block, fullParts, cpsh)
 	pbm := blockMeta.ToProto()
 	if pbm == nil {
 		panic("nil blockmeta")
@@ -404,6 +422,26 @@ func (bs *BlockStore) saveBlockPart(height int64, index int, part *types.Part) {
 	}
 }
 
+func (bs *BlockStore) saveConsensusPartSet(height int64, cps *types.PartSet) types.PartSetHeader {
+	if cps == nil {
+		return types.PartSetHeader{}
+	}
+
+	for i := 0; i < int(cps.Total()); i++ {
+		pbp, err := cps.GetPart(i).ToProto()
+		if err != nil {
+			panic(fmt.Errorf("unable to make consensus part into proto: %w", err))
+		}
+
+		err = bs.db.Set(calcBlockPartKey(height, i), mustEncode(pbp))
+		if err != nil {
+			panic(err)
+		}
+	}
+
+	return cps.Header()
+}
+
 func (bs *BlockStore) saveState() {
 	bs.mtx.RLock()
 	bss := tmstore.BlockStoreState{
@@ -436,6 +474,10 @@ func calcBlockMetaKey(height int64) []byte {
 
 func calcBlockPartKey(height int64, partIndex int) []byte {
 	return []byte(fmt.Sprintf("P:%v:%v", height, partIndex))
+}
+
+func calcBlockConsensusPartKey(height int64, partIndex int) []byte {
+	return []byte(fmt.Sprintf("CP:%v:%v", height, partIndex))
 }
 
 func calcBlockCommitKey(height int64) []byte {

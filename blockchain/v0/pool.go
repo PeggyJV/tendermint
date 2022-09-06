@@ -208,20 +208,21 @@ func (pool *BlockPool) PopRequest() {
 	pool.mtx.Lock()
 	defer pool.mtx.Unlock()
 
-	if r := pool.requesters[pool.height]; r != nil {
-		/*  The block can disappear at any time, due to removePeer().
-		if r := pool.requesters[pool.height]; r == nil || r.block == nil {
-			PanicSanity("PopRequest() requires a valid block")
-		}
-		*/
-		if err := r.Stop(); err != nil {
-			pool.Logger.Error("Error stopping requester", "err", err)
-		}
-		delete(pool.requesters, pool.height)
-		pool.height++
-	} else {
+	r := pool.requesters[pool.height]
+	if r == nil {
 		panic(fmt.Sprintf("Expected requester to pop, got nothing at height %v", pool.height))
 	}
+
+	/*  The block can disappear at any time, due to removePeer().
+	if r := pool.requesters[pool.height]; r == nil || r.block == nil {
+		PanicSanity("PopRequest() requires a valid block")
+	}
+	*/
+	if err := r.Stop(); err != nil {
+		pool.Logger.Error("Error stopping requester", "err", err)
+	}
+	delete(pool.requesters, pool.height)
+	pool.height++
 }
 
 // RedoRequest invalidates the block at pool.height,
@@ -233,7 +234,7 @@ func (pool *BlockPool) RedoRequest(height int64) p2p.ID {
 
 	request := pool.requesters[height]
 	peerID := request.getPeerID()
-	if peerID != p2p.ID("") {
+	if peerID != "" {
 		// RemovePeer will redo all requesters associated with this peer.
 		pool.removePeer(peerID)
 	}
@@ -250,12 +251,10 @@ func (pool *BlockPool) AddBlock(peerID p2p.ID, block *types.Block, blockSize int
 	if requester == nil {
 		pool.Logger.Info(
 			"peer sent us a block we didn't expect",
-			"peer",
-			peerID,
-			"curHeight",
-			pool.height,
-			"blockHeight",
-			block.Height)
+			"peer", peerID,
+			"curHeight", pool.height,
+			"blockHeight", block.Height,
+		)
 		diff := pool.height - block.Height
 		if diff < 0 {
 			diff *= -1
