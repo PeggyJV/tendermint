@@ -44,6 +44,7 @@ type LauncherTendermint struct {
 	RunValidatorInProcess bool
 
 	mNodeCFGs        map[string]*config.Config
+	mPersistentPeers map[string]string
 	clients          []*TMClient
 	dirs             testDirs
 	portFactory      *portFactory
@@ -62,7 +63,49 @@ func (l *LauncherTendermint) Clients() []*TMClient {
 	return l.clients
 }
 
-func (l *LauncherTendermint) SetupFS(now time.Time, narwhalCFGs []*config.NarwhalMempoolConfig) error {
+type (
+	TMOpts struct {
+		Host       string
+		NodeName   string
+		P2PPort    string
+		RPCPort    string
+		NarwhalCFG *config.NarwhalMempoolConfig
+	}
+
+	RenameOpt struct {
+		ExternalIP string
+		Name       string
+	}
+)
+
+func (l *LauncherTendermint) RenameDirs(opts ...RenameOpt) error {
+	mRename := make(map[string]string)
+	for _, opt := range opts {
+		if opt.Name == "" {
+			continue
+		}
+		mRename[opt.ExternalIP] = opt.Name
+	}
+
+	for _, nodeName := range l.dirs.nodeNames {
+		primHostPort := strings.Split(l.mPersistentPeers[nodeName], "@")[1]
+		primHost := strings.Split(primHostPort, ":")[0]
+
+		newName, ok := mRename[primHost]
+		if !ok {
+			continue
+		}
+
+		err := os.Rename(l.dirs.nodeDir(nodeName), l.dirs.nodeDir(newName))
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (l *LauncherTendermint) SetupFS(now time.Time, opts []TMOpts) error {
 	if l.portFactory == nil {
 		l.portFactory = new(portFactory)
 		defer l.portFactory.close()
@@ -77,7 +120,7 @@ func (l *LauncherTendermint) SetupFS(now time.Time, narwhalCFGs []*config.Narwha
 		return err
 	}
 
-	nodeNames, err := l.setupTMFS(cfg, now, narwhalCFGs)
+	nodeNames, err := l.setupTMFS(cfg, now, opts)
 	if err != nil {
 		return err
 	}
@@ -242,26 +285,37 @@ type tmNode struct {
 	rpc, p2p string
 }
 
-func (l *LauncherTendermint) setupTMFS(cfg *config.Config, now time.Time, narwhalCFGs []*config.NarwhalMempoolConfig) (nodes []string, e error) {
+func (l *LauncherTendermint) setupTMFS(cfg *config.Config, now time.Time, opts []TMOpts) (nodes []string, e error) {
 	var (
-		genVals = make([]types.GenesisValidator, len(narwhalCFGs))
-		mNodes  = make([]tmNode, len(narwhalCFGs))
+		genVals = make([]types.GenesisValidator, len(opts))
+		mNodes  = make([]tmNode, len(opts))
 	)
-	for i := range narwhalCFGs {
-		nodeName := fmt.Sprintf("%s%d", tmNodeDirPrefix, i)
+	for i, opt := range opts {
+		nodeName := opt.NodeName
+		if nodeName == "" {
+			nodeName = fmt.Sprintf("%s%d", tmNodeDirPrefix, i)
+		}
 		nodeDir := l.dirs.nodeDir(nodeName)
 		cfg.SetRoot(nodeDir)
 
-		randoPorts, err := l.portFactory.newRandomPorts(3, l.Host)
+		randoPorts, err := l.portFactory.newRandomPorts(2, l.Host)
 		if err != nil {
 			return nil, err
 		}
-		mNodes[i] = tmNode{
+
+		tmn := tmNode{
 			id:   i,
 			name: nodeName,
-			rpc:  randoPorts[0],
-			p2p:  randoPorts[1],
+			rpc:  opt.RPCPort,
+			p2p:  opt.P2PPort,
 		}
+		if tmn.rpc == "" {
+			tmn.rpc = randoPorts[0]
+		}
+		if tmn.p2p == "" {
+			tmn.p2p = randoPorts[1]
+		}
+		mNodes[i] = tmn
 
 		err = createDirs(
 			l.dirs.configDir(nodeName),
@@ -301,10 +355,11 @@ func (l *LauncherTendermint) setupTMFS(cfg *config.Config, now time.Time, narwha
 		Validators:      genVals,
 	}
 
-	mPersistentPeers, err := persistentPeersString(cfg, l.dirs, l.Host, mNodes)
+	mPersistentPeers, err := persistentPeersString(cfg, l.dirs, l.Host, mNodes, opts)
 	if err != nil {
 		return nil, err
 	}
+	l.mPersistentPeers = mPersistentPeers
 
 	persistentPeerFn := func(nodeName string) string {
 		var out []string
@@ -317,8 +372,8 @@ func (l *LauncherTendermint) setupTMFS(cfg *config.Config, now time.Time, narwha
 		return strings.Join(out, ",")
 	}
 
-	newListenAddr := func(port string) string {
-		return "tcp://" + net.JoinHostPort(l.Host, port)
+	newListenAddr := func(host, port string) string {
+		return "tcp://" + net.JoinHostPort(host, port)
 	}
 
 	var (
@@ -327,7 +382,8 @@ func (l *LauncherTendermint) setupTMFS(cfg *config.Config, now time.Time, narwha
 	)
 	// Overwrite default cfg.
 	for _, node := range mNodes {
-		narwhalCFG := narwhalCFGs[node.id]
+		opt := opts[node.id]
+		narwhalCFG := opt.NarwhalCFG
 		cfg.SetRoot(l.dirs.nodeDir(node.name))
 
 		if err := genDoc.SaveAs(cfg.GenesisFile()); err != nil {
@@ -335,8 +391,8 @@ func (l *LauncherTendermint) setupTMFS(cfg *config.Config, now time.Time, narwha
 		}
 		cfg.Consensus.ConsensusStrategy = "meta_only"
 		cfg.Narwhal = narwhalCFG
-		cfg.RPC.ListenAddress = newListenAddr(node.rpc)
-		cfg.P2P.ListenAddress = newListenAddr(node.p2p)
+		cfg.RPC.ListenAddress = newListenAddr(l.Host, node.rpc)
+		cfg.P2P.ListenAddress = newListenAddr(l.Host, node.p2p)
 		cfg.P2P.AddrBookStrict = false
 		cfg.P2P.AllowDuplicateIP = true
 		cfg.P2P.PersistentPeers = persistentPeerFn(node.name)
@@ -394,9 +450,14 @@ func initFilesWithConfig(cfg *config.Config) error {
 	return nil
 }
 
-func persistentPeersString(cfg *config.Config, dirs testDirs, host string, nodes []tmNode) (map[string]string, error) {
+func persistentPeersString(cfg *config.Config, dirs testDirs, host string, nodes []tmNode, opts []TMOpts) (map[string]string, error) {
 	persistentPeers := make(map[string]string, len(nodes))
 	for _, node := range nodes {
+		var opt TMOpts
+		if node.id < len(opts) {
+			opt = opts[node.id]
+		}
+		host := strOrDef(opt.Host, host)
 		nodeDir := dirs.nodeDir(node.name)
 		cfg.SetRoot(nodeDir)
 		nodeKey, err := p2p.LoadNodeKey(cfg.NodeKeyFile())

@@ -62,10 +62,10 @@ func TestNarwhalPool(t *testing.T) {
 	memLogger := logger.With("module", "mempool")
 	mempoolCFG := config.TestMempoolConfig()
 
-	primaryCFGs := l.NarwhalMempoolConfigs()
+	primaryCFGs := l.TMOpts("", "")
 	mpABCIs := make([]*mempool.ABCI, 0, len(primaryCFGs))
-	for _, narwhalCFG := range primaryCFGs {
-		pool, err := narwhal.New(ctx, narwhalCFG, narwhal.WithLogger(memLogger.With("component", "narwhal")))
+	for _, tmOpts := range primaryCFGs {
+		pool, err := narwhal.New(ctx, tmOpts.NarwhalCFG, narwhal.WithLogger(memLogger.With("component", "narwhal")))
 		require.NoError(t, err)
 
 		mpABCIs = append(mpABCIs, mempool.NewABCI(

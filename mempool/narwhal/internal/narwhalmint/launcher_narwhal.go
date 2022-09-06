@@ -29,28 +29,35 @@ type LauncherNarwhal struct {
 	Primaries  int // will default to 4 when not set
 	Workers    int // will default to 1 when not set
 
-	dirs             testDirs
-	committeeCFG     committeeCFG
-	runtimeErrStream <-chan error
-	status           string
+	dirs                testDirs
+	committeeCFG        committeePrimariesCFG
+	mWorkerNetworkKeys  map[string]map[int]string
+	mPrimaryNetworkKeys map[string]string
+	runtimeErrStream    <-chan error
+	status              string
 }
 
-func (l *LauncherNarwhal) NarwhalMempoolConfigs() []*config.NarwhalMempoolConfig {
-	out := make([]*config.NarwhalMempoolConfig, 0, len(l.committeeCFG.Authorities))
+func (l *LauncherNarwhal) TMOpts(p2pPort, rpcPort string) []TMOpts {
+	out := make([]TMOpts, 0, len(l.committeeCFG.Authorities))
 	for pk, primary := range l.committeeCFG.Authorities {
 		cfg := config.NarwhalMempoolConfig{
-			PrimaryAddr:             primary.Primary.GRPC.HostPort(),
+			PrimaryAddr:             primary.GRPC.HostPort(),
 			PrimaryEncodedPublicKey: pk,
 		}
-		var i int
-		for _, worker := range primary.Workers {
+
+		for workerID, worker := range primary.Workers {
 			cfg.Workers = append(cfg.Workers, config.NarwhalWorkerConfig{
-				Name: strconv.Itoa(i),
+				Name: workerID,
 				Addr: worker.Transactions.HostPort(),
 			})
-			i++
 		}
-		out = append(out, &cfg)
+
+		out = append(out, TMOpts{
+			Host:       primary.PrimaryAddress.Host(),
+			P2PPort:    p2pPort,
+			RPCPort:    rpcPort,
+			NarwhalCFG: &cfg,
+		})
 	}
 	return out
 }
@@ -60,24 +67,70 @@ func (l *LauncherNarwhal) Dir() string {
 	return l.dirs.rootDir
 }
 
+type (
+	NarwhalOpt struct {
+		NodeName   string
+		PrimHost   string
+		PrimPort   string
+		GRPCHost   string
+		GRPCPort   string
+		WorkerOpts []NarwhalWorkerOpt
+	}
+
+	NarwhalWorkerOpt struct {
+		TxsHost    string
+		TxsPort    string
+		WorkerHost string
+		WorkerPort string
+	}
+)
+
+func (l *LauncherNarwhal) RenameDirs(opts ...NarwhalOpt) error {
+	comm, err := readCommitteeFiles(l.dirs)
+	if err != nil {
+		return err
+	}
+
+	renamedToo := make(map[string]string)
+	for _, opt := range opts {
+		if opt.NodeName == "" {
+			continue
+		}
+		renamedToo[opt.PrimHost] = opt.NodeName
+	}
+
+	for nodeName, n := range comm.Authorities {
+		newName, ok := renamedToo[n.PrimaryAddress.Host()]
+		if !ok {
+			continue
+		}
+		err := os.Rename(l.dirs.nodeDir(nodeName), l.dirs.nodeDir(newName))
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 // SetupFS sets up the filesystem to run the narwhal nodes.
-func (l *LauncherNarwhal) SetupFS(ctx context.Context, now time.Time) error {
+func (l *LauncherNarwhal) SetupFS(ctx context.Context, now time.Time, opts ...NarwhalOpt) error {
 	if l.BatchSize == 0 {
 		l.BatchSize = 5000
 	}
 	if l.HeaderSize == 0 {
 		l.HeaderSize = 500
 	}
-	if l.Primaries == 0 {
+	if l.Primaries == 0 && len(opts) == 0 {
 		l.Primaries = 4
 		l.println("setting primaries to default value of 4")
 	}
-	if l.Workers == 0 {
+	if l.Workers == 0 && len(opts) == 0 {
 		l.Workers = 1
 		l.println("setting workers to default value of 1")
 	}
 
-	err := l.setupTestEnv(ctx, now)
+	err := l.setupTestEnv(ctx, now, opts)
 	if err != nil {
 		return err
 	}
@@ -99,7 +152,7 @@ func (l *LauncherNarwhal) StartFrom(ctx context.Context, rootDir string) error {
 		return err
 	}
 
-	l.committeeCFG, err = readCommitteeFile(l.dirs.committeeFile())
+	l.committeeCFG, err = readCommitteeFiles(l.dirs)
 	if err != nil {
 		return err
 	}
@@ -156,33 +209,39 @@ func (l *LauncherNarwhal) runAllNodes(ctx context.Context) (<-chan error, error)
 		defer close(errStream)
 
 		wg := new(sync.WaitGroup)
-		// setup primaries
 		for i := range l.dirs.nodeNames {
+			nName := l.dirs.nodeNames[i]
+			workerCFGs := l.committeeCFG.Authorities[nName].Workers
+			workerIDs := make([]string, 0, len(workerCFGs))
+			for workerID := range workerCFGs {
+				workerIDs = append(workerIDs, workerID)
+			}
+
+			// start primaries
 			wg.Add(1)
-			go func(nName string) {
+			go func(nName string, workerIDs []string) {
 				defer wg.Done()
 
-				err := runPrimary(ctx, readyMsgStream, l.dirs, nName)
+				err := runPrimary(ctx, readyMsgStream, l.dirs, nName, workerIDs)
 				if err != nil && err != context.Canceled && !isSignalKilledErr(err) {
 					errStream <- err
 				}
-			}(l.dirs.nodeNames[i])
-		}
+			}(nName, workerIDs)
 
-		// setup workers
-		for i := range l.dirs.nodeNames {
-			for j := 0; j < workers; j++ {
+			// start workers
+			for workerID := range workerCFGs {
 				wg.Add(1)
-				go func(idx int, nName string) {
+				go func(nName, workerID string, workerIDs []string) {
 					defer wg.Done()
 
-					err := runWorker(ctx, readyMsgStream, l.dirs, nName, strconv.Itoa(idx))
+					err := runWorker(ctx, readyMsgStream, l.dirs, nName, workerIDs, workerID)
 					if err != nil && err != context.Canceled && !isSignalKilledErr(err) {
 						errStream <- err
 					}
-				}(j, l.dirs.nodeNames[i])
+				}(nName, workerID, workerIDs)
 			}
 		}
+
 		wg.Wait()
 	}(l.Workers)
 
@@ -229,25 +288,31 @@ func (l *LauncherNarwhal) awaitStartup(ctx context.Context, readyMsgStream <-cha
 	})
 }
 
-func (l *LauncherNarwhal) setupTestEnv(ctx context.Context, now time.Time) (e error) {
+func (l *LauncherNarwhal) setupTestEnv(ctx context.Context, now time.Time, opts []NarwhalOpt) (e error) {
 	l.dirs = newTestResultsDir(now, "narwhal")
 	if err := createDirs(l.dirs.nodesDir()); err != nil {
 		return err
 	}
 
-	nodeNames, err := setupNodes(ctx, l.dirs, l.Primaries)
+	numPrimaries := len(opts)
+	if numPrimaries == 0 {
+		numPrimaries = l.Primaries
+	}
+
+	nodeNames, mPrimNetworkKeys, mWorkerNetworkKeys, err := setupNodes(ctx, l.dirs, numPrimaries, l.Workers)
 	if err != nil {
 		return fmt.Errorf("failed to setup narwhal node directories: %w", err)
 	}
 	l.dirs.nodeNames = nodeNames
+	l.mPrimaryNetworkKeys, l.mWorkerNetworkKeys = mPrimNetworkKeys, mWorkerNetworkKeys
 
-	comCFG, err := setupCommitteeCFG(l.Host, l.dirs.nodeNames, l.Workers)
+	comCFG, err := l.setupCommitteeCFG(opts)
 	if err != nil {
 		return err
 	}
 	l.committeeCFG = comCFG
 
-	err = writeCommitteeFile(l.dirs.committeeFile(), comCFG)
+	err = writeCommitteeFiles(l.dirs, comCFG)
 	if err != nil {
 		return fmt.Errorf("failed to write committee file: %w", err)
 	}
@@ -263,7 +328,7 @@ func (l *LauncherNarwhal) setupTestEnv(ctx context.Context, now time.Time) (e er
 func (l *LauncherNarwhal) writeParameterFiles() error {
 	for nodeName, auth := range l.committeeCFG.Authorities {
 		paramFile := l.dirs.nodeParameterFile(nodeName)
-		err := writeParametersFile(paramFile, string(auth.Primary.GRPC), l.BatchSize, l.HeaderSize)
+		err := writeParametersFile(paramFile, string(auth.GRPC), l.BatchSize, l.HeaderSize)
 		if err != nil {
 			return fmt.Errorf("failed to write parameters file(%s): %w", paramFile, err)
 		}
@@ -278,29 +343,29 @@ func (l *LauncherNarwhal) println(format string, args ...interface{}) {
 	fmt.Fprintln(l.Out, append([]interface{}{format}, args...)...)
 }
 
-func runPrimary(ctx context.Context, readyStream chan<- readyMsg, dirs testDirs, nodeName string) error {
+func runPrimary(ctx context.Context, readyStream chan<- readyMsg, dirs testDirs, nodeName string, workerIDs []string) error {
 	label := "primary"
 
 	readyTailer := newNarwhalReadyWriter(ctx, readyStream, "primary", nodeName, "")
-	err := runNodeExecCmd(ctx, readyTailer, dirs, nodeName, label, "primary", "--consensus-disabled")
+	err := runNodeExecCmd(ctx, readyTailer, dirs, nodeName, label, workerIDs, "primary", "--consensus-disabled")
 	if err != nil {
 		return fmt.Errorf("node %s encountered runtime error: %w", nodeName, err)
 	}
 	return nil
 }
 
-func runWorker(ctx context.Context, readyStream chan<- readyMsg, dirs testDirs, nodeName string, workerID string) error {
+func runWorker(ctx context.Context, readyStream chan<- readyMsg, dirs testDirs, nodeName string, workerIDs []string, workerID string) error {
 	label := "worker_" + workerID
 
 	readyTailer := newNarwhalReadyWriter(ctx, readyStream, "worker", nodeName, workerID)
-	err := runNodeExecCmd(ctx, readyTailer, dirs, nodeName, label, "worker", "--id", workerID)
+	err := runNodeExecCmd(ctx, readyTailer, dirs, nodeName, label, workerIDs, "worker", "--id", workerID)
 	if err != nil {
 		return fmt.Errorf("node %s worker %s encountered runtime error: %w", nodeName, workerID, err)
 	}
 	return nil
 }
 
-func runNodeExecCmd(ctx context.Context, readyTailer io.Writer, dirs testDirs, nodeName, label string, subCmd string, subCmdArgs ...string) error {
+func runNodeExecCmd(ctx context.Context, readyTailer io.Writer, dirs testDirs, nodeName, label string, workerIDs []string, subCmd string, subCmdArgs ...string) error {
 	f, closeFn, err := newLogFileWriter(dirs.nodeLogFile(nodeName, label))
 	if err != nil {
 		return fmt.Errorf("failed to create log file for node %s: %w", nodeName, err)
@@ -311,10 +376,13 @@ func runNodeExecCmd(ctx context.Context, readyTailer io.Writer, dirs testDirs, n
 	args := []string{
 		"-vvv", // set logs to debug
 		"run",  // first subcommand
-		"--keys", dirs.nodeKeyFile(nodeName),
-		"--committee", dirs.committeeFile(),
+		"--primary-keys", dirs.nodeKeyFile(nodeName),
+		"--committee", dirs.committeePrimaryFile(),
+		"--primary-network-keys", dirs.nodeNetworkPrimaryKeyFile(nodeName),
 		"--parameters", dirs.nodeParameterFile(nodeName),
 		"--store", dirs.nodeDBDir(nodeName, label),
+		"--workers", dirs.committeeWorkerFile(),
+		"--worker-keys", dirs.nodeNetworkWorkerKeyFiles(nodeName, workerIDs),
 	}
 	args = append(args, subCmd)
 	args = append(args, subCmdArgs...)
@@ -324,30 +392,48 @@ func runNodeExecCmd(ctx context.Context, readyTailer io.Writer, dirs testDirs, n
 	return cmd.Run()
 }
 
-func setupNodes(ctx context.Context, testDir testDirs, numPrimaries int) ([]string, error) {
+func setupNodes(ctx context.Context, testDir testDirs, numPrimaries, numWorkers int) ([]string, map[string]string, map[string]map[int]string, error) {
 	nodeNames := make([]string, 0, numPrimaries)
+	mPrimNetworkKeys := make(map[string]string)
+	mWorkerNetworkKeys := make(map[string]map[int]string)
 	for i := 0; i < numPrimaries; i++ {
-		nodeName, err := setupNodeDir(ctx, testDir)
+		nodeName, networkKey, workerNetworkKeys, err := setupNodeDir(ctx, testDir, numWorkers)
 		if err != nil {
-			return nil, fmt.Errorf("failed to setup node dir: %w", err)
+			return nil, nil, nil, fmt.Errorf("failed to setup node dir: %w", err)
 		}
 		nodeNames = append(nodeNames, nodeName)
+		mPrimNetworkKeys[nodeName] = networkKey
+		mWorkerNetworkKeys[nodeName] = workerNetworkKeys
 	}
-	return nodeNames, nil
+	return nodeNames, mPrimNetworkKeys, mWorkerNetworkKeys, nil
 }
 
-func setupNodeDir(ctx context.Context, testDir testDirs) (string, error) {
+func setupNodeDir(ctx context.Context, testDir testDirs, numWorkers int) (string, string, map[int]string, error) {
 	nodeName, err := newKeyFile(ctx, testDir)
 	if err != nil {
-		return "", fmt.Errorf("failed to create new key file: %w", err)
+		return "", "", nil, fmt.Errorf("failed to create new key file: %w", err)
+	}
+
+	networkKey, err := newNetworkKeyFile(ctx, testDir.nodeNetworkPrimaryKeyFile(nodeName))
+	if err != nil {
+		return "", "", nil, fmt.Errorf("failed to create primary network key file: %w", err)
+	}
+
+	mWorkerNetworkKeys := make(map[int]string, numWorkers)
+	for i := 0; i < numWorkers; i++ {
+		networkKey, err := newNetworkKeyFile(ctx, testDir.nodeNetworkWorkerKeyFile(nodeName, strconv.Itoa(i)))
+		if err != nil {
+			return "", "", nil, fmt.Errorf("failed to write worker %d network key file: %w", i, err)
+		}
+		mWorkerNetworkKeys[i] = networkKey
 	}
 
 	err = createDirs(testDir.nodeLogDir(nodeName))
 	if err != nil {
-		return "", fmt.Errorf("failed to create log dir for node %s: %w", nodeName, err)
+		return "", "", nil, fmt.Errorf("failed to create log dir for node %s: %w", nodeName, err)
 	}
 
-	return nodeName, nil
+	return nodeName, networkKey, mWorkerNetworkKeys, nil
 }
 
 func newKeyFile(ctx context.Context, testDir testDirs) (string, error) {
@@ -358,15 +444,10 @@ func newKeyFile(ctx context.Context, testDir testDirs) (string, error) {
 		return "", fmt.Errorf("failed to execute generate_keys: %w", err)
 	}
 
-	b, err := os.ReadFile(tmpFile)
-	if err != nil {
-		return "", fmt.Errorf("failed to read newly creatd key file: %w", err)
-	}
-
 	var keyFile struct {
 		Name string `json:"name"`
 	}
-	err = json.Unmarshal(b, &keyFile)
+	err = readJSONFile(tmpFile, &keyFile)
 	if err != nil {
 		return "", fmt.Errorf("failed to unmarshal key file: %w", err)
 	}
@@ -386,97 +467,166 @@ func newKeyFile(ctx context.Context, testDir testDirs) (string, error) {
 	return keyFile.Name, nil
 }
 
+func newNetworkKeyFile(ctx context.Context, filename string) (string, error) {
+	cmd := exec.CommandContext(ctx, "narwhal_node", "generate_network_keys", "--filename", filename)
+	if err := cmd.Run(); err != nil {
+		return "", err
+	}
+
+	var keyFile struct {
+		Name string `json:"name"`
+	}
+	err := readJSONFile(filename, &keyFile)
+	if err != nil {
+		return "", err
+	}
+	return keyFile.Name, nil
+}
+
 type (
-	committeeCFG struct {
+	committeePrimariesCFG struct {
 		Authorities map[string]AuthorityCFG `json:"authorities"`
 		Epoch       int                     `json:"epoch"`
 	}
 
-	AuthorityCFG struct {
-		Primary PrimaryCFG           `json:"primary"`
-		Stake   int                  `json:"stake"`
-		Workers map[string]WorkerCFG `json:"workers"`
+	committeeWorkersCFG struct {
+		Epoch   int                             `json:"epoch"`
+		Workers map[string]map[string]WorkerCFG `json:"workers"`
 	}
 
-	PrimaryCFG struct {
-		PrimaryToPrimary Multiaddr `json:"primary_to_primary"`
-		WorkerToPrimary  Multiaddr `json:"worker_to_primary"`
-		GRPC             Multiaddr `json:"-"`
+	AuthorityCFG struct {
+		NetworkKey     string               `json:"network_key"`
+		PrimaryAddress Multiaddr            `json:"primary_address"`
+		GRPC           Multiaddr            `json:"-"`
+		Stake          int                  `json:"stake"`
+		Workers        map[string]WorkerCFG `json:"-"`
 	}
 
 	WorkerCFG struct {
-		PrimaryToWorker Multiaddr `json:"primary_to_worker"`
-		Transactions    Multiaddr `json:"transactions"`
-		WorkerToWorker  Multiaddr `json:"worker_to_worker"`
+		NetworkKey   string    `json:"name"`
+		Transactions Multiaddr `json:"transactions"`
+		WorkerAddr   Multiaddr `json:"worker_address"`
 	}
 )
 
 type Multiaddr string
 
-func (m Multiaddr) HostPort() string {
+func (m Multiaddr) Host() string {
 	parts := strings.Split(string(m), "/")
 	if len(parts) < 6 {
 		return ""
 	}
-	return net.JoinHostPort(parts[2], parts[4])
+	return parts[2]
 }
 
-func writeCommitteeFile(filename string, cfg committeeCFG) error {
-	b, err := json.MarshalIndent(cfg, "", "  ")
+func (m Multiaddr) HostPort() string {
+	return net.JoinHostPort(m.Host(), m.Port())
+}
+
+func (m Multiaddr) Port() string {
+	parts := strings.Split(string(m), "/")
+	if len(parts) < 6 {
+		return ""
+	}
+	return parts[4]
+}
+
+func writeCommitteeFiles(dirs testDirs, cfg committeePrimariesCFG) error {
+	err := writeJSONFile(dirs.committeePrimaryFile(), cfg)
 	if err != nil {
-		return fmt.Errorf("failed to write comittee.json file: %w", err)
+		return fmt.Errorf("failed to write primary comittee file: %w", err)
+	}
+
+	workerCFG := committeeWorkersCFG{
+		Epoch:   cfg.Epoch,
+		Workers: make(map[string]map[string]WorkerCFG, len(cfg.Authorities)),
+	}
+	for nodeName := range cfg.Authorities {
+		workerCFG.Workers[nodeName] = cfg.Authorities[nodeName].Workers
+	}
+
+	err = writeJSONFile(dirs.committeeWorkerFile(), workerCFG)
+	if err != nil {
+		return fmt.Errorf("failed to write worker committee file: %w", err)
+	}
+
+	return nil
+}
+
+func writeJSONFile(filename string, v interface{}) error {
+	b, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return err
 	}
 
 	return os.WriteFile(filename, b, os.ModePerm)
 }
 
-func setupCommitteeCFG(host string, nodeNames []string, numWorkers int) (committeeCFG, error) {
+func (l *LauncherNarwhal) setupCommitteeCFG(opts []NarwhalOpt) (committeePrimariesCFG, error) {
 	portFact := new(portFactory)
 	defer portFact.close()
 
-	committee := committeeCFG{
-		Authorities: make(map[string]AuthorityCFG, len(nodeNames)),
+	committee := committeePrimariesCFG{
+		Authorities: make(map[string]AuthorityCFG, len(l.dirs.nodeNames)),
 	}
-	for _, authority := range nodeNames {
-		primCFG, err := newPrimaryCFG(portFact, host)
+	for i, authority := range l.dirs.nodeNames {
+		var opt NarwhalOpt
+		if i < len(opts) {
+			opt = opts[i]
+		}
+		primAddr, grpcAddr, err := newPrimaryCFG(portFact, l.Host, opt)
 		if err != nil {
-			return committeeCFG{}, fmt.Errorf("failed to create pimary cfg: %w", err)
+			return committeePrimariesCFG{}, fmt.Errorf("failed to create pimary cfg: %w", err)
 		}
 
-		workerCFGs, err := newWorkerCFGs(portFact, host, numWorkers)
+		workerCFGs, err := newWorkerCFGs(portFact, l.Host, l.Workers, opt.WorkerOpts, l.mWorkerNetworkKeys[authority])
 		if err != nil {
-			return committeeCFG{}, fmt.Errorf("failed to create worker cfgs: %w", err)
+			return committeePrimariesCFG{}, fmt.Errorf("failed to create worker cfgs: %w", err)
 		}
 
 		committee.Authorities[authority] = AuthorityCFG{
-			Primary: primCFG,
-			Stake:   1,
-			Workers: workerCFGs,
+			PrimaryAddress: primAddr,
+			GRPC:           grpcAddr,
+			NetworkKey:     l.mPrimaryNetworkKeys[authority],
+			Stake:          1,
+			Workers:        workerCFGs,
 		}
 	}
 
 	return committee, nil
 }
 
-func newPrimaryCFG(portFact *portFactory, host string) (PrimaryCFG, error) {
-	ports, err := portFact.newRandomPorts(3, host)
-	if err != nil {
-		return PrimaryCFG{}, fmt.Errorf("failed to create primary cfg: %w", err)
+func strOrDef(in, defValue string) string {
+	if in == "" {
+		return defValue
 	}
-
-	cfg := PrimaryCFG{
-		PrimaryToPrimary: newNarwhalMultiAddr(host, ports[0]),
-		WorkerToPrimary:  newNarwhalMultiAddr(host, ports[1]),
-		GRPC:             newNarwhalMultiAddr(host, ports[2]),
-	}
-
-	return cfg, nil
+	return in
 }
 
-func newWorkerCFGs(portFact *portFactory, host string, numWorkers int) (map[string]WorkerCFG, error) {
+func newPrimaryCFG(portFact *portFactory, host string, opt NarwhalOpt) (Multiaddr, Multiaddr, error) {
+	ports, err := portFact.newRandomPorts(2, host)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to create primary cfg: %w", err)
+	}
+
+	prim2PrimAddr := newNarwhalMultiAddr(strOrDef(opt.PrimHost, host), strOrDef(opt.PrimPort, ports[0]))
+	grpcAddr := newNarwhalMultiAddr(strOrDef(opt.GRPCHost, host), strOrDef(opt.GRPCPort, ports[1]))
+
+	return prim2PrimAddr, grpcAddr, nil
+}
+
+func newWorkerCFGs(portFact *portFactory, host string, numWorkers int, workerOpts []NarwhalWorkerOpt, mWorkerNetworkKeys map[int]string) (map[string]WorkerCFG, error) {
+	if numOpts := len(workerOpts); numOpts > 0 {
+		numWorkers = numOpts
+	}
+
 	workers := make(map[string]WorkerCFG, numWorkers)
 	for i := 0; i < numWorkers; i++ {
-		cfg, err := newWorkerCFG(portFact, host)
+		var workerOpt NarwhalWorkerOpt
+		if i < len(workerOpts) {
+			workerOpt = workerOpts[i]
+		}
+		cfg, err := newWorkerCFG(portFact, host, workerOpt, mWorkerNetworkKeys[i])
 		if err != nil {
 			return nil, fmt.Errorf("failed to create worker %d: %w", i, err)
 		}
@@ -485,16 +635,19 @@ func newWorkerCFGs(portFact *portFactory, host string, numWorkers int) (map[stri
 	return workers, nil
 }
 
-func newWorkerCFG(portFact *portFactory, host string) (WorkerCFG, error) {
-	ports, err := portFact.newRandomPorts(3, host)
+func newWorkerCFG(portFact *portFactory, host string, opt NarwhalWorkerOpt, networkKey string) (WorkerCFG, error) {
+	ports, err := portFact.newRandomPorts(2, host)
 	if err != nil {
 		return WorkerCFG{}, err
 	}
 
+	workerAddr := newNarwhalMultiAddr(strOrDef(opt.WorkerHost, host), strOrDef(opt.WorkerPort, ports[0]))
+	txsAddr := newNarwhalMultiAddr(strOrDef(opt.TxsHost, host), strOrDef(opt.TxsPort, ports[1]))
+
 	cfg := WorkerCFG{
-		PrimaryToWorker: newNarwhalMultiAddr(host, ports[0]),
-		Transactions:    newNarwhalMultiAddr(host, ports[1]),
-		WorkerToWorker:  newNarwhalMultiAddr(host, ports[2]),
+		WorkerAddr:   workerAddr,
+		Transactions: txsAddr,
+		NetworkKey:   networkKey,
 	}
 
 	return cfg, nil
@@ -579,18 +732,35 @@ func newNarwhalReadyWriter(ctx context.Context, stream chan<- readyMsg, nodeType
 
 }
 
-func readCommitteeFile(filename string) (committeeCFG, error) {
-	bb, err := os.ReadFile(filename)
+func readCommitteeFiles(dirs testDirs) (committeePrimariesCFG, error) {
+	var primCFGs committeePrimariesCFG
+	err := readJSONFile(dirs.committeePrimaryFile(), &primCFGs)
 	if err != nil {
-		return committeeCFG{}, err
+		return committeePrimariesCFG{}, fmt.Errorf("failed to read primary committe file: %w", err)
 	}
 
-	var committee committeeCFG
-	err = json.Unmarshal(bb, &committee)
+	var workerCFGs committeeWorkersCFG
+	err = readJSONFile(dirs.committeeWorkerFile(), &workerCFGs)
 	if err != nil {
-		return committeeCFG{}, err
+		return committeePrimariesCFG{}, fmt.Errorf("failed to read worker committe file: %w", err)
 	}
-	return committee, nil
+
+	for name := range workerCFGs.Workers {
+		cfg := primCFGs.Authorities[name]
+		cfg.Workers = workerCFGs.Workers[name]
+		primCFGs.Authorities[name] = cfg
+	}
+
+	return primCFGs, nil
+}
+
+func readJSONFile(filename string, v interface{}) error {
+	bb, err := os.ReadFile(filename)
+	if err != nil {
+		return err
+	}
+
+	return json.Unmarshal(bb, v)
 }
 
 func isSignalKilledErr(err error) bool {

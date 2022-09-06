@@ -384,6 +384,7 @@ func createMempoolAndMempoolReactor(
 	)
 	switch {
 	case config.Narwhal != nil:
+		mempoolLogger.Info("setting up narwhal mempool")
 		var err error
 		// note that the narwhal mempool does not make use of a WAL or a reactor
 		mpABCI, err = newNarwhalMempoolABCI(ctx, mempoolLogger, proxyApp.Mempool(), config)

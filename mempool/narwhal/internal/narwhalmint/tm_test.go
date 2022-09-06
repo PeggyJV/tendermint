@@ -19,7 +19,6 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/tendermint/tendermint/config"
 	"github.com/tendermint/tendermint/mempool/narwhal/internal/narwhalmint"
 	coretypes "github.com/tendermint/tendermint/rpc/core/types"
 	"github.com/tendermint/tendermint/types"
@@ -118,7 +117,7 @@ func Test_TM_Narwhal(t *testing.T) {
 
 	clients := ltm.Clients()
 
-	runner := newTMClientRunner(clients, 200_000, 10)
+	runner := newTMClientRunner(clients, 300_000, 10)
 	defer func() {
 		runner.printRunStats(t)
 		writeTestStats(t, narwhalmint.TestDir(start), start, runner.runtimeStats())
@@ -198,7 +197,7 @@ func startDefaultNarwhalTMNodes(ctx context.Context, tb testing.TB, opts narwhal
 	}
 
 	lnarwhal := startDefaultNarwhalNodes(ctx, tb, opts)
-	ltm := startDefaultTMNodes(ctx, tb, lnarwhal.NarwhalMempoolConfigs(), opts)
+	ltm := startDefaultTMNodes(ctx, tb, lnarwhal.TMOpts("", ""), opts)
 
 	return lnarwhal, ltm
 }
@@ -256,7 +255,7 @@ func startDefaultNarwhalNodes(ctx context.Context, tb testing.TB, opts narwhalTM
 	return &lnarwhal
 }
 
-func startDefaultTMNodes(ctx context.Context, tb testing.TB, narwhalCFGs []*config.NarwhalMempoolConfig, opts narwhalTMOpts) *narwhalmint.LauncherTendermint {
+func startDefaultTMNodes(ctx context.Context, tb testing.TB, tmOpts []narwhalmint.TMOpts, opts narwhalTMOpts) *narwhalmint.LauncherTendermint {
 	tb.Helper()
 
 	if opts.Start.IsZero() {
@@ -277,7 +276,7 @@ func startDefaultTMNodes(ctx context.Context, tb testing.TB, narwhalCFGs []*conf
 
 	if opts.StartFrom == "" {
 		tb.Log(nowTS(), "setting up tendermint filesystem...")
-		require.NoError(tb, ltm.SetupFS(opts.Start, narwhalCFGs))
+		require.NoError(tb, ltm.SetupFS(opts.Start, tmOpts))
 	}
 
 	tb.Logf("%s starting tendermint nodes with proxy app %s...", nowTS(), ltm.ProxyAppType)

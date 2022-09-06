@@ -25,8 +25,12 @@ type testDirs struct {
 	nodeNames []string
 }
 
-func (t testDirs) committeeFile() string {
-	return filepath.Join(t.rootDir, "committee.json")
+func (t testDirs) committeePrimaryFile() string {
+	return filepath.Join(t.rootDir, "primaries.json")
+}
+
+func (t testDirs) committeeWorkerFile() string {
+	return filepath.Join(t.rootDir, "workers.json")
 }
 
 func (t testDirs) configDir(nodeName string) string {
@@ -63,6 +67,22 @@ func (t testDirs) nodeLogDir(nodeName string) string {
 
 func (t testDirs) nodeLogFile(nodeName, label string) string {
 	return filepath.Join(t.nodeLogDir(nodeName), label)
+}
+
+func (t testDirs) nodeNetworkPrimaryKeyFile(nodeName string) string {
+	return filepath.Join(t.nodeDir(nodeName), "primary_network_key.json")
+}
+
+func (t testDirs) nodeNetworkWorkerKeyFile(nodeName, workerID string) string {
+	return filepath.Join(t.nodeDir(nodeName), "worker_"+workerID+"_network_key.json")
+}
+
+func (t testDirs) nodeNetworkWorkerKeyFiles(nodeName string, workerIDs []string) string {
+	var files []string
+	for _, workerID := range workerIDs {
+		files = append(files, t.nodeNetworkWorkerKeyFile(nodeName, workerID))
+	}
+	return strings.Join(files, ",")
 }
 
 func (t testDirs) nodeParameterFile(nodeName string) string {
