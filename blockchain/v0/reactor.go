@@ -45,6 +45,11 @@ func (e peerError) Error() string {
 	return fmt.Sprintf("error with peer %v: %s", e.peerID, e.err.Error())
 }
 
+// BlockSaveStrategy saves a block by the strategy it implements.
+type BlockSaveStrategy interface {
+	SaveBlock(bs sm.BlockStore, bl *types.Block, fullPS *types.PartSet, commit *types.Commit)
+}
+
 // BlockchainReactor handles long-term catchup syncing.
 type BlockchainReactor struct {
 	p2p.BaseReactor
@@ -52,18 +57,24 @@ type BlockchainReactor struct {
 	// immutable
 	initialState sm.State
 
-	blockExec *sm.BlockExecutor
-	store     *store.BlockStore
-	pool      *BlockPool
-	fastSync  bool
+	blockExec         *sm.BlockExecutor
+	store             *store.BlockStore
+	pool              *BlockPool
+	blockSaveStrategy BlockSaveStrategy
+	fastSync          bool
 
 	requestsCh <-chan BlockRequest
 	errorsCh   <-chan peerError
 }
 
 // NewBlockchainReactor returns new reactor instance.
-func NewBlockchainReactor(state sm.State, blockExec *sm.BlockExecutor, store *store.BlockStore,
-	fastSync bool) *BlockchainReactor {
+func NewBlockchainReactor(
+	state sm.State,
+	blockExec *sm.BlockExecutor,
+	store *store.BlockStore,
+	blockSaver BlockSaveStrategy,
+	fastSync bool,
+) *BlockchainReactor {
 
 	if state.LastBlockHeight != store.Height() {
 		panic(fmt.Sprintf("state (%v) and store (%v) height mismatch", state.LastBlockHeight,
@@ -82,13 +93,17 @@ func NewBlockchainReactor(state sm.State, blockExec *sm.BlockExecutor, store *st
 	pool := NewBlockPool(startHeight, requestsCh, errorsCh)
 
 	bcR := &BlockchainReactor{
-		initialState: state,
-		blockExec:    blockExec,
-		store:        store,
-		pool:         pool,
-		fastSync:     fastSync,
-		requestsCh:   requestsCh,
-		errorsCh:     errorsCh,
+		initialState:      state,
+		blockExec:         blockExec,
+		store:             store,
+		pool:              pool,
+		fastSync:          fastSync,
+		requestsCh:        requestsCh,
+		errorsCh:          errorsCh,
+		blockSaveStrategy: blockSaver,
+	}
+	if bcR.blockSaveStrategy == nil {
+		bcR.blockSaveStrategy = defaultBlockSaveStrategy{}
 	}
 	bcR.BaseReactor = *p2p.NewBaseReactor("BlockchainReactor", bcR)
 	return bcR
@@ -397,7 +412,7 @@ func (bcR *BlockchainReactor) trySync(state sm.State, chainID string, didProcess
 		didProcessCh <- struct{}{}
 	}
 
-	firstParts := first.MakePartSet(types.BlockPartSizeBytes)
+	firstParts := first.MakeDefaultPartSet()
 	firstPartSetHeader := firstParts.Header()
 	firstID := types.BlockID{Hash: first.Hash(), PartSetHeader: firstPartSetHeader}
 
@@ -429,7 +444,7 @@ func (bcR *BlockchainReactor) trySync(state sm.State, chainID string, didProcess
 	bcR.pool.PopRequest()
 
 	// TODO: batch saves so we dont persist to disk every block
-	bcR.store.SaveBlock(first, firstParts, second.LastCommit)
+	bcR.blockSaveStrategy.SaveBlock(bcR.store, first, firstParts, second.LastCommit)
 
 	// TODO: same thing for app - but we would need a way to
 	// get the hash without persisting the state

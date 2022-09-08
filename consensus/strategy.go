@@ -15,7 +15,8 @@ type ProposedBlockData struct {
 }
 
 type Strategy interface {
-	ConsensusPartSetFromBlock(block *types.Block) *types.PartSet
+	ConsensusPSFromBlock(block *types.Block) *types.PartSet
+	ConsensusPSHeaderFromBlockMeta(bm *types.BlockMeta) types.PartSetHeader
 	CreateProposalBlock(
 		ctx context.Context,
 		blockExec *state.BlockExecutor,
@@ -25,7 +26,6 @@ type Strategy interface {
 		proposerAddr []byte,
 	) (ProposedBlockData, error)
 	LoadConsensusBlockPart(blockStore state.BlockStore, height int64, idx int) *types.Part
-	ConsensusPSHeaderFromBlockMeta(bm *types.BlockMeta) types.PartSetHeader
 	SaveBlock(bs state.BlockStore, bl *types.Block, fullPS *types.PartSet, commit *types.Commit)
 	SetRoundStateProposalData(ctx context.Context, blockExec *state.BlockExecutor, rs *cstypes.RoundState, block *types.Block) error
 }
@@ -36,7 +36,7 @@ type strategyFull struct{}
 
 var _ Strategy = strategyFull{}
 
-func (s strategyFull) ConsensusPartSetFromBlock(block *types.Block) *types.PartSet {
+func (s strategyFull) ConsensusPSFromBlock(block *types.Block) *types.PartSet {
 	return block.MakeDefaultPartSet()
 }
 
@@ -95,7 +95,7 @@ type strategyMetaOnly struct{}
 
 var _ Strategy = strategyMetaOnly{}
 
-func (s strategyMetaOnly) ConsensusPartSetFromBlock(block *types.Block) *types.PartSet {
+func (s strategyMetaOnly) ConsensusPSFromBlock(block *types.Block) *types.PartSet {
 	csBlock := types.Block{
 		Header:     block.Header,
 		Evidence:   block.Evidence,
@@ -124,7 +124,7 @@ func (s strategyMetaOnly) CreateProposalBlock(
 	return ProposedBlockData{
 		Block:            block,
 		BlockID:          blockID,
-		ConsensusPartSet: s.ConsensusPartSetFromBlock(block),
+		ConsensusPartSet: s.ConsensusPSFromBlock(block),
 	}, nil
 }
 
@@ -138,7 +138,7 @@ func (s strategyMetaOnly) SaveBlock(
 	fullPS *types.PartSet,
 	commit *types.Commit,
 ) {
-	consensusPS := s.ConsensusPartSetFromBlock(bl)
+	consensusPS := s.ConsensusPSFromBlock(bl)
 	bs.SaveBlockV2(bl, consensusPS, fullPS, commit)
 }
 
@@ -155,7 +155,7 @@ func (s strategyMetaOnly) SetRoundStateProposalData(
 	}
 	block.Data = data
 
-	//TODO(berg): do we need to reset the data hash now that we have dat hydrated?
+	//TODO(berg): do we need to reset the data hash now that we have data hydrated?
 	block.DataHash = nil
 	block.Hash() // to reset DataHash
 

@@ -226,6 +226,10 @@ func (cs *State) SetEventBus(b *types.EventBus) {
 	cs.blockExec.SetEventBus(b)
 }
 
+func (cs *State) Strategy() Strategy {
+	return cs.strategy
+}
+
 // String returns a string.
 func (cs *State) String() string {
 	// better not to access shared variables
@@ -1135,7 +1139,7 @@ func (cs *State) defaultDecideProposal(height int64, round int32) {
 			Hash:          block.Hash(),
 			PartSetHeader: cs.ValidBlockParts.Header(),
 		}
-		consensusBlockParts = cs.strategy.ConsensusPartSetFromBlock(block)
+		consensusBlockParts = cs.strategy.ConsensusPSFromBlock(block)
 	} else {
 		// Create a new proposal block from state/txs from the mempool.
 		res := cs.createProposalBlock()
@@ -1863,6 +1867,9 @@ func (cs *State) defaultSetProposal(proposal *types.Proposal) error {
 	// We don't update cs.ConsensusPartSet if it is already set.
 	// This happens if we're already in cstypes.RoundStepCommit or if there is a valid block in the current round.
 	// TODO: We can check if Proposal is for a different block as this is a sign of misbehavior!
+	// TODO(berg): since we have a separation of consensus partset and proposal block set... what does this
+	//			   imply here now? Are we safe to continue consensus rounds while another proposal is in
+	//			   round commit? I wager yes... need to confirm
 	if cs.ConsensusPartSet == nil {
 		cs.ConsensusPartSet = types.NewPartSetFromHeader(proposal.ConsensusPartSetHeader)
 	}
@@ -1906,7 +1913,7 @@ func (cs *State) addProposalBlockPart(msg *BlockPartMessage, peerID p2p.ID) (add
 	// TODO(berg): will need to address this, within narwhal, this limit is basicaly
 	//				unreachable at this time.
 	if bs := csPS.ByteSize(); bs > cs.state.ConsensusParams.Block.MaxBytes {
-		return added, fmt.Errorf("total size of proposal block parts exceeds maximum block bytes (%d > %d)",
+		return added, fmt.Errorf("total size of consensus block parts exceeds maximum block bytes (%d > %d)",
 			bs, cs.state.ConsensusParams.Block.MaxBytes,
 		)
 	}
@@ -1933,6 +1940,12 @@ func (cs *State) addProposalBlockPart(msg *BlockPartMessage, peerID p2p.ID) (add
 	err = cs.strategy.SetRoundStateProposalData(context.TODO(), cs.blockExec, &cs.RoundState, block)
 	if err != nil {
 		return added, err
+	}
+	// TODO(berg): is this necessary?
+	if bs := cs.ProposalBlockParts.ByteSize(); bs > cs.state.ConsensusParams.Block.MaxBytes {
+		return added, fmt.Errorf("total size of proposal block parts exceeds maximum block bytes (%d > %d)",
+			bs, cs.state.ConsensusParams.Block.MaxBytes,
+		)
 	}
 
 	// NOTE: it's possible to receive complete proposal blocks for future rounds without having the proposal

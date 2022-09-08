@@ -466,11 +466,13 @@ func createBlockchainReactor(config *cfg.Config,
 	blockExec *sm.BlockExecutor,
 	blockStore *store.BlockStore,
 	fastSync bool,
-	logger log.Logger) (bcReactor p2p.Reactor, err error) {
+	logger log.Logger,
+	strategy cs.Strategy,
+) (bcReactor p2p.Reactor, err error) {
 
 	switch config.FastSync.Version {
 	case "v0":
-		bcReactor = bcv0.NewBlockchainReactor(state.Copy(), blockExec, blockStore, fastSync)
+		bcReactor = bcv0.NewBlockchainReactor(state.Copy(), blockExec, blockStore, strategy, fastSync)
 	case "v1":
 		bcReactor = bcv1.NewBlockchainReactor(state.Copy(), blockExec, blockStore, fastSync)
 	case "v2":
@@ -842,8 +844,21 @@ func NewNode(config *cfg.Config,
 		sm.BlockExecutorWithMetrics(smMetrics),
 	)
 
+	consensusReactor, consensusState := createConsensusReactor(
+		config, state, blockExec, blockStore, mpABCI, evidencePool,
+		privValidator, csMetrics, stateSync || fastSync, eventBus, consensusLogger,
+	)
+
 	// Make BlockchainReactor. Don't start fast sync if we're doing a state sync first.
-	bcReactor, err := createBlockchainReactor(config, state, blockExec, blockStore, fastSync && !stateSync, logger)
+	bcReactor, err := createBlockchainReactor(
+		config,
+		state,
+		blockExec,
+		blockStore,
+		fastSync && !stateSync,
+		logger,
+		consensusState.Strategy(),
+	)
 	if err != nil {
 		return nil, fmt.Errorf("could not create blockchain reactor: %w", err)
 	}
@@ -855,10 +870,6 @@ func NewNode(config *cfg.Config,
 	} else if fastSync {
 		csMetrics.FastSyncing.Set(1)
 	}
-	consensusReactor, consensusState := createConsensusReactor(
-		config, state, blockExec, blockStore, mpABCI, evidencePool,
-		privValidator, csMetrics, stateSync || fastSync, eventBus, consensusLogger,
-	)
 
 	// Set up state sync reactor, and schedule a sync if requested.
 	// FIXME The way we do phased startups (e.g. replay -> fast sync -> consensus) is very messy,
