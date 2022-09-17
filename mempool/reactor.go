@@ -1,6 +1,7 @@
 package mempool
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"math"
@@ -32,9 +33,10 @@ const (
 // peers you received it from.
 type Reactor struct {
 	p2p.BaseReactor
-	config  *cfg.MempoolConfig
-	mempool *CListMempool
-	ids     *mempoolIDs
+	config    *cfg.MempoolConfig
+	abci      *ABCI
+	clistPool *PoolCList
+	ids       *mempoolIDs
 }
 
 type mempoolIDs struct {
@@ -101,11 +103,12 @@ func newMempoolIDs() *mempoolIDs {
 }
 
 // NewReactor returns a new Reactor with the given config and mempool.
-func NewReactor(config *cfg.MempoolConfig, mempool *CListMempool) *Reactor {
+func NewReactor(config *cfg.MempoolConfig, mp *ABCI, clist *PoolCList) *Reactor {
 	memR := &Reactor{
-		config:  config,
-		mempool: mempool,
-		ids:     newMempoolIDs(),
+		config:    config,
+		abci:      mp,
+		clistPool: clist,
+		ids:       newMempoolIDs(),
 	}
 	memR.BaseReactor = *p2p.NewBaseReactor("Mempool", memR)
 	return memR
@@ -120,7 +123,7 @@ func (memR *Reactor) InitPeer(peer p2p.Peer) p2p.Peer {
 // SetLogger sets the Logger on the reactor and the underlying mempool.
 func (memR *Reactor) SetLogger(l log.Logger) {
 	memR.Logger = l
-	memR.mempool.SetLogger(l)
+	memR.clistPool.SetLogger(l)
 }
 
 // OnStart implements p2p.BaseReactor.
@@ -167,6 +170,8 @@ func (memR *Reactor) RemovePeer(peer p2p.Peer, reason interface{}) {
 // Receive implements Reactor.
 // It adds any received transactions to the mempool.
 func (memR *Reactor) Receive(chID byte, src p2p.Peer, msgBytes []byte) {
+	ctx := context.TODO() // TODO(berg): clean this up once we wire up contexts
+
 	msg, err := memR.decodeMsg(msgBytes)
 	if err != nil {
 		memR.Logger.Error("Error decoding message", "src", src, "chId", chID, "err", err)
@@ -180,7 +185,7 @@ func (memR *Reactor) Receive(chID byte, src p2p.Peer, msgBytes []byte) {
 		txInfo.SenderP2PID = src.ID()
 	}
 	for _, tx := range msg.Txs {
-		err = memR.mempool.CheckTx(tx, nil, txInfo)
+		err = memR.abci.CheckTx(ctx, tx, nil, txInfo)
 		if err == ErrTxInCache {
 			memR.Logger.Debug("Tx already exists in cache", "tx", txID(tx))
 		} else if err != nil {
@@ -210,8 +215,8 @@ func (memR *Reactor) broadcastTxRoutine(peer p2p.Peer) {
 		// start from the beginning.
 		if next == nil {
 			select {
-			case <-memR.mempool.TxsWaitChan(): // Wait until a tx is available
-				if next = memR.mempool.TxsFront(); next == nil {
+			case <-memR.clistPool.TxsWaitChan(): // Wait until a tx is available
+				if next = memR.clistPool.TxsFront(); next == nil {
 					continue
 				}
 			case <-peer.Quit():
@@ -272,7 +277,7 @@ func (memR *Reactor) broadcastTxRoutine(peer p2p.Peer) {
 	}
 }
 
-//-----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
 // Messages
 
 func (memR *Reactor) decodeMsg(bz []byte) (TxsMessage, error) {
@@ -304,7 +309,7 @@ func (memR *Reactor) decodeMsg(bz []byte) (TxsMessage, error) {
 	return message, fmt.Errorf("msg type: %T is not supported", msg)
 }
 
-//-------------------------------------
+// -------------------------------------
 
 // TxsMessage is a Message containing transactions.
 type TxsMessage struct {

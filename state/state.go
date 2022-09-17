@@ -239,10 +239,27 @@ func (state State) MakeBlock(
 	evidence []types.Evidence,
 	proposerAddress []byte,
 ) (*types.Block, *types.PartSet) {
-
-	// Build base block with block data.
 	block := types.MakeBlock(height, txs, commit, evidence)
+	return state.makeBlockPartSet(block, height, commit, proposerAddress)
+}
 
+func (state State) MakeBlockV2(
+	height int64,
+	data types.Data,
+	commit *types.Commit,
+	evidence []types.Evidence,
+	proposerAddress []byte,
+) (*types.Block, *types.PartSet) {
+	block := types.MakeBlockV2(height, data, commit, evidence)
+	return state.makeBlockPartSet(block, height, commit, proposerAddress)
+}
+
+func (state State) makeBlockPartSet(
+	block *types.Block,
+	height int64,
+	commit *types.Commit,
+	proposerAddr []byte,
+) (*types.Block, *types.PartSet) {
 	// Set time.
 	var timestamp time.Time
 	if height == state.InitialHeight {
@@ -252,12 +269,13 @@ func (state State) MakeBlock(
 	}
 
 	// Fill rest of header with state data.
+	// TODO(berg): We could stick the narwhal collections in the header here instead of the Data payload
 	block.Header.Populate(
 		state.Version.Consensus, state.ChainID,
 		timestamp, state.LastBlockID,
 		state.Validators.Hash(), state.NextValidators.Hash(),
 		types.HashConsensusParams(state.ConsensusParams), state.AppHash, state.LastResultsHash,
-		proposerAddress,
+		proposerAddr,
 	)
 
 	return block, block.MakePartSet(types.BlockPartSizeBytes)

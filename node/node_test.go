@@ -229,6 +229,8 @@ func TestCreateProposalBlock(t *testing.T) {
 	require.Nil(t, err)
 	defer proxyApp.Stop() //nolint:errcheck // ignore for tests
 
+	ctx := context.TODO()
+
 	logger := log.TestingLogger()
 
 	var height int64 = 1
@@ -243,15 +245,22 @@ func TestCreateProposalBlock(t *testing.T) {
 
 	// Make Mempool
 	memplMetrics := mempl.PrometheusMetrics("node_test_1")
-	mempool := mempl.NewCListMempool(
+	mpLogger := logger.With("module", "mempool")
+	poolClist := mempl.NewPoolCList(
 		config.Mempool,
-		proxyApp.Mempool(),
 		state.LastBlockHeight,
 		mempl.WithMetrics(memplMetrics),
 		mempl.WithPreCheck(sm.TxPreCheck(state)),
 		mempl.WithPostCheck(sm.TxPostCheck(state)),
 	)
-	mempool.SetLogger(logger)
+	poolClist.SetLogger(mpLogger.With("component", "pool_clist"))
+
+	mp := mempl.NewABCI(
+		mpLogger.With("component", "abci"),
+		config.Mempool,
+		proxyApp.Mempool(),
+		poolClist,
+	)
 
 	// Make EvidencePool
 	evidenceDB := dbm.NewMemDB()
@@ -279,7 +288,7 @@ func TestCreateProposalBlock(t *testing.T) {
 	txLength := 100
 	for i := 0; i <= maxBytes/txLength; i++ {
 		tx := tmrand.Bytes(txLength)
-		err := mempool.CheckTx(tx, nil, mempl.TxInfo{})
+		err := mp.CheckTx(ctx, tx, nil, mempl.TxInfo{})
 		assert.NoError(t, err)
 	}
 
@@ -287,16 +296,17 @@ func TestCreateProposalBlock(t *testing.T) {
 		stateStore,
 		logger,
 		proxyApp.Consensus(),
-		mempool,
+		mp,
 		evidencePool,
 	)
 
 	commit := types.NewCommit(height-1, 0, types.BlockID{}, nil)
-	block, _ := blockExec.CreateProposalBlock(
+	block, _, err := blockExec.CreateProposalBlock(
 		height,
 		state, commit,
 		proposerAddr,
 	)
+	require.NoError(t, err)
 
 	// check that the part set does not exceed the maximum block size
 	partSet := block.MakePartSet(partSize)
@@ -323,6 +333,7 @@ func TestMaxProposalBlockSize(t *testing.T) {
 	require.Nil(t, err)
 	defer proxyApp.Stop() //nolint:errcheck // ignore for tests
 
+	ctx := context.TODO()
 	logger := log.TestingLogger()
 
 	var height int64 = 1
@@ -335,36 +346,44 @@ func TestMaxProposalBlockSize(t *testing.T) {
 
 	// Make Mempool
 	memplMetrics := mempl.PrometheusMetrics("node_test_2")
-	mempool := mempl.NewCListMempool(
+	mpLogger := logger.With("module", "mempool")
+	poolClist := mempl.NewPoolCList(
 		config.Mempool,
-		proxyApp.Mempool(),
 		state.LastBlockHeight,
 		mempl.WithMetrics(memplMetrics),
 		mempl.WithPreCheck(sm.TxPreCheck(state)),
 		mempl.WithPostCheck(sm.TxPostCheck(state)),
 	)
-	mempool.SetLogger(logger)
+	poolClist.SetLogger(mpLogger.With("component", "pool_clist"))
+
+	mp := mempl.NewABCI(
+		mpLogger.With("component", "abci"),
+		config.Mempool,
+		proxyApp.Mempool(),
+		poolClist,
+	)
 
 	// fill the mempool with one txs just below the maximum size
 	txLength := int(types.MaxDataBytesNoEvidence(maxBytes, 1))
 	tx := tmrand.Bytes(txLength - 4) // to account for the varint
-	err = mempool.CheckTx(tx, nil, mempl.TxInfo{})
+	err = mp.CheckTx(ctx, tx, nil, mempl.TxInfo{})
 	assert.NoError(t, err)
 
 	blockExec := sm.NewBlockExecutor(
 		stateStore,
 		logger,
 		proxyApp.Consensus(),
-		mempool,
+		mp,
 		sm.EmptyEvidencePool{},
 	)
 
 	commit := types.NewCommit(height-1, 0, types.BlockID{}, nil)
-	block, _ := blockExec.CreateProposalBlock(
+	block, _, err := blockExec.CreateProposalBlock(
 		height,
 		state, commit,
 		proposerAddr,
 	)
+	require.NoError(t, err)
 
 	pb, err := block.ToProto()
 	require.NoError(t, err)

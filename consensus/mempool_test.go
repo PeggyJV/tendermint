@@ -1,6 +1,7 @@
 package consensus
 
 import (
+	"context"
 	"encoding/binary"
 	"fmt"
 	"os"
@@ -20,11 +21,12 @@ import (
 )
 
 // for testing
-func assertMempool(txn txNotifier) mempl.Mempool {
-	return txn.(mempl.Mempool)
+func assertMempool(txn TxNotifier) *mempl.ABCI {
+	return txn.(*mempl.ABCI)
 }
 
 func TestMempoolNoProgressUntilTxsAvailable(t *testing.T) {
+	ctx := context.TODO()
 	config := ResetConfig("consensus_mempool_txs_available_test")
 	defer os.RemoveAll(config.RootDir)
 	config.Consensus.CreateEmptyBlocks = false
@@ -37,7 +39,7 @@ func TestMempoolNoProgressUntilTxsAvailable(t *testing.T) {
 
 	ensureNewEventOnChannel(newBlockCh) // first block gets committed
 	ensureNoNewEventOnChannel(newBlockCh)
-	deliverTxsRange(cs, 0, 1)
+	deliverTxsRange(ctx, cs, 0, 1)
 	ensureNewEventOnChannel(newBlockCh) // commit txs
 	ensureNewEventOnChannel(newBlockCh) // commit updated app hash
 	ensureNoNewEventOnChannel(newBlockCh)
@@ -62,6 +64,8 @@ func TestMempoolProgressAfterCreateEmptyBlocksInterval(t *testing.T) {
 }
 
 func TestMempoolProgressInHigherRound(t *testing.T) {
+	ctx := context.TODO()
+
 	config := ResetConfig("consensus_mempool_txs_available_test")
 	defer os.RemoveAll(config.RootDir)
 	config.Consensus.CreateEmptyBlocks = false
@@ -90,7 +94,7 @@ func TestMempoolProgressInHigherRound(t *testing.T) {
 	round = 0
 
 	ensureNewRound(newRoundCh, height, round) // first round at next height
-	deliverTxsRange(cs, 0, 1)                 // we deliver txs, but dont set a proposal so we get the next round
+	deliverTxsRange(ctx, cs, 0, 1)            // we deliver txs, but dont set a proposal so we get the next round
 	ensureNewTimeout(timeoutCh, height, round, cs.config.TimeoutPropose.Nanoseconds())
 
 	round++                                   // moving to the next round
@@ -98,12 +102,12 @@ func TestMempoolProgressInHigherRound(t *testing.T) {
 	ensureNewEventOnChannel(newBlockCh)       // now we can commit the block
 }
 
-func deliverTxsRange(cs *State, start, end int) {
+func deliverTxsRange(ctx context.Context, cs *State, start, end int) {
 	// Deliver some txs.
 	for i := start; i < end; i++ {
 		txBytes := make([]byte, 8)
 		binary.BigEndian.PutUint64(txBytes, uint64(i))
-		err := assertMempool(cs.txNotifier).CheckTx(txBytes, nil, mempl.TxInfo{})
+		err := assertMempool(cs.txNotifier).CheckTx(ctx, txBytes, nil, mempl.TxInfo{})
 		if err != nil {
 			panic(fmt.Sprintf("Error after CheckTx: %v", err))
 		}
@@ -111,6 +115,8 @@ func deliverTxsRange(cs *State, start, end int) {
 }
 
 func TestMempoolTxConcurrentWithCommit(t *testing.T) {
+	ctx := context.TODO()
+
 	state, privVals := randGenesisState(1, false, 10)
 	blockDB := dbm.NewMemDB()
 	stateStore := sm.NewStore(blockDB)
@@ -120,7 +126,7 @@ func TestMempoolTxConcurrentWithCommit(t *testing.T) {
 	newBlockHeaderCh := subscribe(cs.eventBus, types.EventQueryNewBlockHeader)
 
 	const numTxs int64 = 3000
-	go deliverTxsRange(cs, 0, int(numTxs))
+	go deliverTxsRange(ctx, cs, 0, int(numTxs))
 
 	startTestRound(cs, cs.Height, cs.Round)
 	for n := int64(0); n < numTxs; {
@@ -135,6 +141,7 @@ func TestMempoolTxConcurrentWithCommit(t *testing.T) {
 }
 
 func TestMempoolRmBadTx(t *testing.T) {
+	ctx := context.TODO()
 	state, privVals := randGenesisState(1, false, 10)
 	app := NewCounterApplication()
 	blockDB := dbm.NewMemDB()
@@ -159,7 +166,7 @@ func TestMempoolRmBadTx(t *testing.T) {
 		// Try to send the tx through the mempool.
 		// CheckTx should not err, but the app should return a bad abci code
 		// and the tx should get removed from the pool
-		err := assertMempool(cs.txNotifier).CheckTx(txBytes, func(r *abci.Response) {
+		err := assertMempool(cs.txNotifier).CheckTx(ctx, txBytes, func(r *abci.Response) {
 			if r.GetCheckTx().Code != code.CodeTypeBadNonce {
 				t.Errorf("expected checktx to return bad nonce, got %v", r)
 				return
@@ -173,7 +180,12 @@ func TestMempoolRmBadTx(t *testing.T) {
 
 		// check for the tx
 		for {
-			txs := assertMempool(cs.txNotifier).ReapMaxBytesMaxGas(int64(len(txBytes)), -1)
+			reaper, err := assertMempool(cs.txNotifier).Reap(ctx, mempl.ReapBytes(int64(len(txBytes))))
+			if err != nil {
+				t.Errorf("error getting reaper: %s", err)
+				return
+			}
+			txs := reaper.Txs
 			if len(txs) == 0 {
 				emptyMempoolCh <- struct{}{}
 				return

@@ -1,10 +1,12 @@
 package core
 
 import (
+	"context"
 	"encoding/base64"
 	"fmt"
 	"time"
 
+	abci "github.com/tendermint/tendermint/abci/types"
 	cfg "github.com/tendermint/tendermint/config"
 	"github.com/tendermint/tendermint/consensus"
 	"github.com/tendermint/tendermint/crypto"
@@ -69,6 +71,13 @@ type peers interface {
 	Peers() p2p.IPeerSet
 }
 
+type Mempool interface {
+	CheckTx(ctx context.Context, tx types.Tx, callback func(*abci.Response), txInfo mempl.TxInfo) error
+	Flush(ctx context.Context) error
+	PoolMeta() mempl.PoolMeta
+	Reap(ctx context.Context, opts ...mempl.ReapOptFn) (types.Data, error)
+}
+
 //----------------------------------------------
 // Environment contains objects and interfaces used by the RPC. It is expected
 // to be setup once during startup.
@@ -92,7 +101,7 @@ type Environment struct {
 	BlockIndexer     indexer.BlockIndexer
 	ConsensusReactor *consensus.Reactor
 	EventBus         *types.EventBus // thread safe
-	Mempool          mempl.Mempool
+	Mempool          Mempool
 
 	Logger log.Logger
 

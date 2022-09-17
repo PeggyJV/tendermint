@@ -2,6 +2,7 @@ package types
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 
@@ -10,6 +11,9 @@ import (
 	tmbytes "github.com/tendermint/tendermint/libs/bytes"
 	tmproto "github.com/tendermint/tendermint/proto/tendermint/types"
 )
+
+// TxKey is the fixed length array key used as an index.
+type TxKey [sha256.Size]byte
 
 // Tx is an arbitrary byte array.
 // NOTE: Tx has no types at this level, so when wire encoded it's just length-prefixed.

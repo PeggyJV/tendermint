@@ -49,7 +49,7 @@ type State struct {
 	blockExec *sm.BlockExecutor
 
 	// notify us if txs are available
-	txNotifier txNotifier
+	txNotifier TxNotifier
 
 	// add evidence to the pool
 	// when it's detected
@@ -116,7 +116,7 @@ func NewState(
 	state sm.State,
 	blockExec *sm.BlockExecutor,
 	blockStore sm.BlockStore,
-	txNotifier txNotifier,
+	txNotifier TxNotifier,
 	evpool evidencePool,
 	misbehaviors map[int64]Misbehavior,
 	options ...StateOption,
@@ -460,7 +460,7 @@ func (ti *timeoutInfo) String() string {
 }
 
 // interface to the mempool
-type txNotifier interface {
+type TxNotifier interface {
 	TxsAvailable() <-chan struct{}
 }
 
@@ -1273,7 +1273,12 @@ func (cs *State) createProposalBlock() (block *types.Block, blockParts *types.Pa
 	}
 	proposerAddr := cs.privValidatorPubKey.Address()
 
-	return cs.blockExec.CreateProposalBlock(cs.Height, cs.state, commit, proposerAddr)
+	block, blockParts, err := cs.blockExec.CreateProposalBlock(cs.Height, cs.state, commit, proposerAddr)
+	if err != nil {
+		cs.Logger.Error("failed to create proposal block", "err", err)
+		return nil, nil
+	}
+	return block, blockParts
 }
 
 // Enter: any +2/3 prevotes at next round.

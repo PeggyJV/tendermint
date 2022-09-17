@@ -61,7 +61,7 @@ func (ti *timeoutInfo) String() string {
 }
 
 // interface to the mempool
-type txNotifier interface {
+type TxNotifier interface {
 	TxsAvailable() <-chan struct{}
 }
 
@@ -89,7 +89,7 @@ type State struct {
 	blockExec *sm.BlockExecutor
 
 	// notify us if txs are available
-	txNotifier txNotifier
+	txNotifier TxNotifier
 
 	// add evidence to the pool
 	// when it's detected
@@ -151,7 +151,7 @@ func NewState(
 	state sm.State,
 	blockExec *sm.BlockExecutor,
 	blockStore sm.BlockStore,
-	txNotifier txNotifier,
+	txNotifier TxNotifier,
 	evpool evidencePool,
 	options ...StateOption,
 ) *State {
@@ -1200,7 +1200,16 @@ func (cs *State) createProposalBlock() (block *types.Block, blockParts *types.Pa
 
 	proposerAddr := cs.privValidatorPubKey.Address()
 
-	return cs.blockExec.CreateProposalBlock(cs.Height, cs.state, commit, proposerAddr)
+	block, blockParts, err := cs.blockExec.CreateProposalBlock(cs.Height, cs.state, commit, proposerAddr)
+	if err != nil {
+		cs.Logger.Error("failed to create proposed block",
+			"err", err,
+			"height", cs.Height,
+			"round", cs.Round,
+			"step", cs.Step,
+		)
+	}
+	return block, blockParts
 }
 
 // Enter: `timeoutPropose` after entering Propose.
@@ -2226,14 +2235,14 @@ func (cs *State) signAddVote(msgType tmproto.SignedMsgType, hash []byte, header 
 
 	// TODO: pass pubKey to signVote
 	vote, err := cs.signVote(msgType, hash, header)
-	if err == nil {
-		cs.sendInternalMessage(msgInfo{&VoteMessage{vote}, ""})
-		cs.Logger.Debug("signed and pushed vote", "height", cs.Height, "round", cs.Round, "vote", vote)
-		return vote
+	if err != nil {
+		cs.Logger.Error("failed signing vote", "height", cs.Height, "round", cs.Round, "vote", vote, "err", err)
+		return nil
 	}
 
-	cs.Logger.Error("failed signing vote", "height", cs.Height, "round", cs.Round, "vote", vote, "err", err)
-	return nil
+	cs.sendInternalMessage(msgInfo{&VoteMessage{vote}, ""})
+	cs.Logger.Debug("signed and pushed vote", "height", cs.Height, "round", cs.Round, "vote", vote)
+	return vote
 }
 
 // updatePrivValidatorPubKey get's the private validator public key and

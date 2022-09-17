@@ -1,8 +1,11 @@
 package mempool
 
 import (
+	"context"
 	"encoding/binary"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 
 	"github.com/tendermint/tendermint/abci/example/kvstore"
 	"github.com/tendermint/tendermint/proxy"
@@ -11,33 +14,38 @@ import (
 func BenchmarkReap(b *testing.B) {
 	app := kvstore.NewApplication()
 	cc := proxy.NewLocalClientCreator(app)
-	mempool, cleanup := newMempoolWithApp(cc)
+	_, mp, cleanup := newMempoolWithApp(cc)
 	defer cleanup()
+
+	ctx := context.TODO()
 
 	size := 10000
 	for i := 0; i < size; i++ {
 		tx := make([]byte, 8)
 		binary.BigEndian.PutUint64(tx, uint64(i))
-		if err := mempool.CheckTx(tx, nil, TxInfo{}); err != nil {
+		if err := mp.CheckTx(ctx, tx, nil, TxInfo{}); err != nil {
 			b.Error(err)
 		}
 	}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		mempool.ReapMaxBytesMaxGas(100000000, 10000000)
+		_, err := mp.Reap(ctx, ReapBytes(100000000), ReapGas(10000000))
+		require.NoError(b, err)
 	}
 }
 
 func BenchmarkCheckTx(b *testing.B) {
 	app := kvstore.NewApplication()
 	cc := proxy.NewLocalClientCreator(app)
-	mempool, cleanup := newMempoolWithApp(cc)
+	_, mp, cleanup := newMempoolWithApp(cc)
 	defer cleanup()
+
+	ctx := context.TODO()
 
 	for i := 0; i < b.N; i++ {
 		tx := make([]byte, 8)
 		binary.BigEndian.PutUint64(tx, uint64(i))
-		if err := mempool.CheckTx(tx, nil, TxInfo{}); err != nil {
+		if err := mp.CheckTx(ctx, tx, nil, TxInfo{}); err != nil {
 			b.Error(err)
 		}
 	}

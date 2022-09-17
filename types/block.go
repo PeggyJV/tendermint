@@ -996,6 +996,8 @@ type Data struct {
 	// This means that block.AppHash does not include these txs.
 	Txs Txs `json:"txs"`
 
+	Collections *DAGCollections `json:"collections"`
+
 	// Volatile
 	hash tmbytes.HexBytes
 }
@@ -1043,6 +1045,20 @@ func (data *Data) ToProto() tmproto.Data {
 		tp.Txs = txBzs
 	}
 
+	collections := data.Collections
+	if collections == nil {
+		return *tp
+	}
+
+	tp.RootCollection = collections.RootCollection
+	if len(collections.ExtraCollections) > 0 {
+		extraBzs := make([][]byte, len(collections.ExtraCollections))
+		for i := range collections.ExtraCollections {
+			extraBzs[i] = collections.ExtraCollections[i]
+		}
+		tp.ExtraCollections = extraBzs
+	}
+
 	return *tp
 }
 
@@ -1064,10 +1080,42 @@ func DataFromProto(dp *tmproto.Data) (Data, error) {
 		data.Txs = Txs{}
 	}
 
+	if len(dp.RootCollection) == 0 {
+		return *data, nil
+	}
+
+	data.Collections = &DAGCollections{
+		RootCollection: dp.RootCollection,
+	}
+	if extras := dp.ExtraCollections; len(extras) > 0 {
+		extraBzs := make([]tmbytes.HexBytes, len(dp.ExtraCollections))
+		for i := range extras {
+			extraBzs[i] = extras[i]
+		}
+		data.Collections.ExtraCollections = extraBzs
+	}
+
 	return *data, nil
 }
 
-//-----------------------------------------------------------------------------
+type DAGCollections struct {
+	RootCollection   tmbytes.HexBytes   `json:"root"`
+	ExtraCollections []tmbytes.HexBytes `json:"extras"`
+}
+
+func (d *DAGCollections) Hash() []byte {
+	// These allocations will be removed once Txs is switched to [][]byte,
+	// ref #2603. This is because golang does not allow type casting slices without unsafe
+	b := make([][]byte, 1+len(d.ExtraCollections))
+	b[0] = d.RootCollection
+	for i := 0; i < len(d.ExtraCollections); i++ {
+		b[i+1] = d.ExtraCollections[i]
+	}
+	// TODO(berg): do we need to merklize this?
+	return merkle.HashFromByteSlices(b)
+}
+
+// -----------------------------------------------------------------------------
 
 // EvidenceData contains any evidence of malicious wrong-doing by validators
 type EvidenceData struct {
