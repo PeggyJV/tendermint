@@ -49,17 +49,10 @@ func Benchmark_TM_Narwhal(b *testing.B) {
 	b.StartTimer()
 	defer b.StopTimer()
 
-	done := runner.submitClientTMTxs(ctx)
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(2 * time.Second):
-			runner.printSyncInfo(ctx, b)
-		case <-done:
-			runner.printSyncInfo(ctx, b)
-			return
-		}
+	select {
+	case <-ctx.Done():
+		return
+	case <-runner.watchClientTxSubmissions(ctx, b, 2*time.Second):
 	}
 }
 
@@ -88,17 +81,10 @@ func Test_TM_Narwhal_resume(t *testing.T) {
 	}()
 
 	t.Log(nowTS(), "submitting client Txs: max_txs=", runner.maxTxs, " max_concurrent=", runner.maxConcurrent, " txs/client: ", runner.totalTxsPerClient)
-	done := runner.submitClientTMTxs(ctx)
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(2 * time.Second):
-			runner.printSyncInfo(ctx, t)
-		case <-done:
-			runner.printSyncInfo(ctx, t)
-			return
-		}
+	select {
+	case <-ctx.Done():
+		return
+	case <-runner.watchClientTxSubmissions(ctx, t, 2*time.Second):
 	}
 }
 
@@ -124,19 +110,12 @@ func Test_TM_Narwhal(t *testing.T) {
 	}()
 
 	t.Log(nowTS(), "submitting client Txs: max_txs=", runner.maxTxs, " max_concurrent=", runner.maxConcurrent, " txs/client: ", runner.totalTxsPerClient)
-	done := runner.submitClientTMTxs(ctx)
 
-DONE:
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(2 * time.Second):
-			runner.printSyncInfo(ctx, t)
-		case <-done:
-			runner.printSyncInfo(ctx, t)
-			break DONE
-		}
+	select {
+	case <-ctx.Done():
+		return
+	case <-runner.watchClientTxSubmissions(ctx, t, 2*time.Second):
+		// happy path, progress further
 	}
 
 	for _, info := range runner.nodeStatuses(ctx) {
@@ -382,21 +361,13 @@ func (r *tmClientRunner) printRunStats(tb testing.TB) {
 
 	stats := r.runtimeStats()
 	defer func() {
-		tb.Logf("runtime stats:\ttook=%s", stats.Took)
+		tb.Logf("runtime stats:\ttook=%s rate=%0.2f(tx/sec)", stats.Took.Truncate(truncTo), stats.RateTxsPerSec)
 
-		var nodes []string
-		for nodeName := range r.mStats {
-			nodes = append(nodes, nodeName)
-		}
-		sort.Strings(nodes)
-
-		for _, node := range nodes {
-			st := r.mStats[node]
-			curTx, totalErrs, progress := st.stats()
-			txsSuccess := math.Abs(float64(st.totalTxs-totalErrs)/float64(st.totalTxs)) * 100
+		for _, cls := range stats.ClientStats {
+			curTx, totalErrs, progress := r.mStats[cls.Name].stats()
 			part := fmt.Sprintf(
-				"\t%s: { cur_tx: %d, progress: %0.2f%%, txs_successful: %02.f%%, errs: %d }",
-				node, curTx, progress, txsSuccess, totalErrs,
+				"\t%s: { cur_tx: %d, progress: %0.2f%%, txs_successful: %s%%, errs: %d, rate_tx_per_sec: %0.2f, took: %s }",
+				cls.Name, curTx, progress, cls.PercentSuccessful, totalErrs, cls.RateTxsPerSec, cls.Took.Truncate(truncTo),
 			)
 			tb.Log(part)
 		}
@@ -492,6 +463,26 @@ func (r *tmClientRunner) nodeStatuses(ctx context.Context) []tmNodeStatus {
 	return out
 }
 
+func (r *tmClientRunner) watchClientTxSubmissions(ctx context.Context, tb testing.TB, checkDur time.Duration) <-chan struct{} {
+	end := make(chan struct{})
+	go func() {
+		done := r.submitClientTMTxs(ctx)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(checkDur):
+				r.printSyncInfo(ctx, tb)
+			case <-done:
+				r.printSyncInfo(ctx, tb)
+				close(end) // make sure we print before closing above
+				return
+			}
+		}
+	}()
+	return end
+}
+
 func (r *tmClientRunner) submitClientTMTxs(ctx context.Context) <-chan struct{} {
 	start := time.Now()
 	done := make(chan struct{})
@@ -564,23 +555,25 @@ func (r *tmClientRunner) submitTMTxs(ctx context.Context, cl *narwhalmint.TMClie
 
 type (
 	testStats struct {
-		MaxTxs                 int    `json:"max_txs"`
-		MaxConcurrent          int    `json:"max_concurrent"`
-		Took                   string `json:"took"`
-		TotalErrs              int    `json:"total_errs"`
-		TotalPercentSuccessful string `json:"total_percent_successful"`
-		TotalTxsSubmitted      int    `json:"total_txs_submitted"`
+		MaxTxs                 int       `json:"max_txs"`
+		MaxConcurrent          int       `json:"max_concurrent"`
+		RateTxsPerSec          float64   `json:"txs_per_second"`
+		Took                   prettyDur `json:"took"`
+		TotalErrs              int       `json:"total_errs"`
+		TotalPercentSuccessful string    `json:"total_percent_successful"`
+		TotalTxsSubmitted      int       `json:"total_txs_submitted"`
 
 		ClientStats []testClientStats `json:"z_client_stats"`
 	}
 
 	testClientStats struct {
-		Name              string `json:"name"`
-		MaxTxs            int    `json:"max_txs"`
-		PercentSuccessful string `json:"percent_successful"`
-		Took              string `json:"took"`
-		TotalErrs         int    `json:"total_errs"`
-		TotalTxsSubmitted int    `json:"total_txs_submitted"`
+		Name              string    `json:"name"`
+		MaxTxs            int       `json:"max_txs"`
+		PercentSuccessful string    `json:"percent_successful"`
+		RateTxsPerSec     float64   `json:"txs_per_second"`
+		Took              prettyDur `json:"took"`
+		TotalErrs         int       `json:"total_errs"`
+		TotalTxsSubmitted int       `json:"total_txs_submitted"`
 
 		Errs []testClientErr `json:"z_errs"`
 	}
@@ -601,15 +594,19 @@ func (r *tmClientRunner) runtimeStats() testStats {
 	out := testStats{
 		MaxTxs:        r.maxTxs,
 		MaxConcurrent: r.maxConcurrent,
-		Took:          r.took.Truncate(truncTo).String(),
+		Took:          prettyDur{r.took},
 		TotalErrs:     totalErrs,
 	}
 
-	var totalSuccess float64
+	var (
+		totalSuccess      float64
+		totalAttemptedTxs int
+	)
 	for node, st := range r.mStats {
 		curTx, nTotalErrs, _ := st.stats()
 		txsSuccess := (float64(st.totalTxs-nTotalErrs) / float64(st.totalTxs)) * 100
 		totalSuccess += txsSuccess
+		totalAttemptedTxs += curTx
 		nErrs := errSt[node]
 
 		var cErrs []testClientErr
@@ -624,12 +621,14 @@ func (r *tmClientRunner) runtimeStats() testStats {
 			Name:              node,
 			MaxTxs:            r.totalTxsPerClient,
 			PercentSuccessful: stringPerc(txsSuccess),
-			Took:              st.took.Truncate(truncTo).String(),
+			RateTxsPerSec:     float64(curTx) / st.took.Seconds(),
+			Took:              prettyDur{st.took},
 			TotalErrs:         nTotalErrs,
 			TotalTxsSubmitted: curTx,
 			Errs:              cErrs,
 		})
 	}
+	out.RateTxsPerSec = float64(totalAttemptedTxs) / out.Took.Seconds()
 	out.TotalPercentSuccessful = stringPerc(totalSuccess / float64(len(r.mStats)))
 	sort.Slice(out.ClientStats, func(i, j int) bool {
 		return out.ClientStats[i].Name < out.ClientStats[j].Name
@@ -672,6 +671,29 @@ func (c *clientStats) stats() (currentTx, totalErrs int, progress float64) {
 	}
 	c.mu.RUnlock()
 	return currentTx, totalErrs, progress * 100
+}
+
+type prettyDur struct {
+	time.Duration
+}
+
+func (p prettyDur) MarshalJSON() ([]byte, error) {
+	return json.Marshal(p.Duration.Truncate(truncTo).String())
+}
+
+func (p *prettyDur) UnmarshalJSON(b []byte) error {
+	var s string
+	if err := json.Unmarshal(b, &s); err != nil {
+		return err
+	}
+
+	dur, err := time.ParseDuration(s)
+	if err != nil {
+		return err
+	}
+	p.Duration = dur
+
+	return nil
 }
 
 func writeTestStats(tb testing.TB, testdir string, start time.Time, stats testStats) {
