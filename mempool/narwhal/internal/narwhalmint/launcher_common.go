@@ -198,10 +198,10 @@ type portFactory struct {
 	closers []io.Closer
 }
 
-func (p *portFactory) newRandomPorts(numPorts int, host string) ([]string, error) {
+func (p *portFactory) newRandomPorts(numPorts int) ([]string, error) {
 	ports := make([]string, 0, numPorts)
 	for i := 0; i < numPorts; i++ {
-		port, err := p.newRandomPort(host)
+		port, err := p.newRandomPort()
 		if err != nil {
 			return nil, fmt.Errorf("failed to get host random port: %w", err)
 		}
@@ -210,8 +210,8 @@ func (p *portFactory) newRandomPorts(numPorts int, host string) ([]string, error
 	return ports, nil
 }
 
-func (p *portFactory) newRandomPort(host string) (string, error) {
-	listener, err := net.Listen("tcp", host+":0")
+func (p *portFactory) newRandomPort() (string, error) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return "", fmt.Errorf("failed to take random port: %w", err)
 	}

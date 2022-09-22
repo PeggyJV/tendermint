@@ -40,6 +40,7 @@ type TMClient struct {
 type LauncherTendermint struct {
 	Host                  string
 	Out                   io.Writer
+	OutputDir             string
 	ProxyAppType          string
 	RunValidatorInProcess bool
 
@@ -112,7 +113,11 @@ func (l *LauncherTendermint) SetupFS(now time.Time, opts []TMOpts) error {
 	}
 	l.setDefaults()
 
-	l.dirs = newTestResultsDir(now, "tendermint")
+	if l.OutputDir != "" {
+		l.dirs = testDirs{rootDir: filepath.Join(l.OutputDir, "tendermint")}
+	} else {
+		l.dirs = newTestResultsDir(now, "tendermint")
+	}
 
 	cfg := config.DefaultConfig()
 	err := config.UnmarshalConfig([]byte(configTOML), cfg)
@@ -298,7 +303,7 @@ func (l *LauncherTendermint) setupTMFS(cfg *config.Config, now time.Time, opts [
 		nodeDir := l.dirs.nodeDir(nodeName)
 		cfg.SetRoot(nodeDir)
 
-		randoPorts, err := l.portFactory.newRandomPorts(2, l.Host)
+		randoPorts, err := l.portFactory.newRandomPorts(2)
 		if err != nil {
 			return nil, err
 		}
@@ -373,6 +378,9 @@ func (l *LauncherTendermint) setupTMFS(cfg *config.Config, now time.Time, opts [
 	}
 
 	newListenAddr := func(host, port string) string {
+		if host == "" {
+			return ""
+		}
 		return "tcp://" + net.JoinHostPort(host, port)
 	}
 
@@ -476,7 +484,7 @@ func moniker() string {
 
 var (
 	tmValidatorReadyMsg      = []byte("Ensure peers")
-	tmValidatorFailedMsg     = []byte("ERROR: failed to create node")
+	tmValidatorFailedMsg     = []byte("ERROR: failed to .* node")
 	tmValidatorFailedGoLvlDB = []byte("dial tcp: address goleveldb: missing port in address")
 	tmValidatorFailedCobra   = []byte("Error: ")
 )

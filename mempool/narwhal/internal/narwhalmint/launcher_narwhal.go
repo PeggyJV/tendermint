@@ -26,6 +26,7 @@ type LauncherNarwhal struct {
 	HeaderSize int // will default to 500
 	Host       string
 	Out        io.Writer
+	OutputDir  string
 	Primaries  int // will default to 4 when not set
 	Workers    int // will default to 1 when not set
 
@@ -125,7 +126,7 @@ func (l *LauncherNarwhal) SetupFS(ctx context.Context, now time.Time, opts ...Na
 		l.Primaries = 4
 		l.println("setting primaries to default value of 4")
 	}
-	if l.Workers == 0 && len(opts) == 0 {
+	if l.Workers == 0 {
 		l.Workers = 1
 		l.println("setting workers to default value of 1")
 	}
@@ -289,7 +290,11 @@ func (l *LauncherNarwhal) awaitStartup(ctx context.Context, readyMsgStream <-cha
 }
 
 func (l *LauncherNarwhal) setupTestEnv(ctx context.Context, now time.Time, opts []NarwhalOpt) (e error) {
-	l.dirs = newTestResultsDir(now, "narwhal")
+	if l.OutputDir != "" {
+		l.dirs = testDirs{rootDir: filepath.Join(l.OutputDir, "narwhal")}
+	} else {
+		l.dirs = newTestResultsDir(now, "narwhal")
+	}
 	if err := createDirs(l.dirs.nodesDir()); err != nil {
 		return err
 	}
@@ -604,7 +609,7 @@ func strOrDef(in, defValue string) string {
 }
 
 func newPrimaryCFG(portFact *portFactory, host string, opt NarwhalOpt) (Multiaddr, Multiaddr, error) {
-	ports, err := portFact.newRandomPorts(2, host)
+	ports, err := portFact.newRandomPorts(2)
 	if err != nil {
 		return "", "", fmt.Errorf("failed to create primary cfg: %w", err)
 	}
@@ -636,7 +641,7 @@ func newWorkerCFGs(portFact *portFactory, host string, numWorkers int, workerOpt
 }
 
 func newWorkerCFG(portFact *portFactory, host string, opt NarwhalWorkerOpt, networkKey string) (WorkerCFG, error) {
-	ports, err := portFact.newRandomPorts(2, host)
+	ports, err := portFact.newRandomPorts(2)
 	if err != nil {
 		return WorkerCFG{}, err
 	}
