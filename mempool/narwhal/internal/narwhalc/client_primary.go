@@ -258,12 +258,19 @@ func (b *blockPrep) findRoundCollections(ctx context.Context, startRound, curren
 }
 
 func (b *blockPrep) nextRelevantRound(ctx context.Context, currentRound, mostRecentRound uint64) (lastCompletedRound uint64, extraCollections []*narwhalproto.CertificateDigest, _ error) {
-	return b.traverseRounds(
+	lastCompletedRound, extraCollections, totalTxs, err := b.traverseRounds(
 		ctx,
 		currentRound, mostRecentRound,
 		0, 0, 0,
 		nil,
 	)
+	if err != nil {
+		return 0, nil, err
+	}
+	if totalTxs == 0 {
+		return 0, nil, fmt.Errorf("no txs associated with available DAG rounds")
+	}
+	return lastCompletedRound, extraCollections, nil
 }
 
 func (b *blockPrep) traverseRounds(
@@ -271,16 +278,16 @@ func (b *blockPrep) traverseRounds(
 	currentRound, mostRecentRound uint64,
 	proposedBlockSize, proposedBlockGasCost, proposedBlockNumTXs int64,
 	collections []*narwhalproto.CertificateDigest,
-) (lastCompletedRound uint64, extraCollections []*narwhalproto.CertificateDigest, _ error) {
+) (lastCompletedRound uint64, extraCollections []*narwhalproto.CertificateDigest, totalTxs int64, _ error) {
 	readCausalResp, err := b.pc.NodeReadCausal(ctx, &narwhalproto.NodeReadCausalRequest{
 		PublicKey: &b.publicKey,
 		Round:     currentRound,
 	})
 	if err != nil {
 		if strings.Contains(err.Error(), "No known certificates for this authority") {
-			return currentRound - 1, collections, nil
+			return currentRound - 1, collections, proposedBlockNumTXs, nil
 		}
-		return 0, nil, fmt.Errorf("failed node read cause for current round %d (most recent rount %d): %w", currentRound, mostRecentRound, err)
+		return 0, nil, 0, fmt.Errorf("failed node read cause for current round %d (most recent rount %d): %w", currentRound, mostRecentRound, err)
 	}
 
 	colls, duplicatesRemoved := b.getNewCollectionIDs(readCausalResp.CollectionIds)
@@ -289,12 +296,15 @@ func (b *blockPrep) traverseRounds(
 	for _, collection := range colls {
 		txs, err := b.getCollectionTxs(ctx, collection)
 		if err != nil {
-			return 0, nil, fmt.Errorf("failed to get collection txs: %w", err)
+			return 0, nil, 0, fmt.Errorf("failed to get collection txs: %w", err)
+		}
+		if len(txs) == 0 {
+			continue
 		}
 
 		stats, err := b.getTxsStats(txs)
 		if err != nil {
-			return 0, nil, fmt.Errorf("failed to get txs stats: %w", err)
+			return 0, nil, 0, fmt.Errorf("failed to get txs stats: %w", err)
 		}
 		proposedBlockGasCost += stats.sizeBytes
 		proposedBlockGasCost += stats.gasWanted
@@ -314,12 +324,12 @@ func (b *blockPrep) traverseRounds(
 	// round before and add the extra collections from the current round that will
 	// fit within the gas limit.
 	case len(newColls)+duplicatesRemoved < len(readCausalResp.CollectionIds):
-		return currentRound - 1, newColls, nil
+		return currentRound - 1, newColls, proposedBlockNumTXs, nil
 		// if we are one round ahead of the newest round, then we take the extra collections again
 		// and set the lastCompletedRound to most recent round. This allows us to take nodes in the DAG
 		// that are at the same height as the newest round (the new colls).
 	case currentRound == mostRecentRound+1:
-		return mostRecentRound, newColls, nil
+		return mostRecentRound, newColls, proposedBlockNumTXs, nil
 	}
 
 	// recurse further until we run out of rounds or exceed the gas threshold

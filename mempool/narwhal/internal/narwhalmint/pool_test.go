@@ -97,19 +97,26 @@ func TestNarwhalPool(t *testing.T) {
 		t.Logf("reaping mp[%d]", i)
 		runner.reapTxs(ctx, mpABCIs[i], mempool.ReapBytes(maxBytes))
 	}
-	consensusBlock := runner.reapTxs(ctx, mpABCIs[0], mempool.ReapBytes(maxBytes))
 
-	finishFn, err := mpABCIs[0].PrepBlockFinality(ctx)
-	require.NoError(t, err)
-	defer finishFn()
-
-	err = mpABCIs[0].AfterBlockFinality(ctx, consensusBlock, nil, nil, nil)
-	require.NoError(t, err)
+	applyReapedBlock(ctx, t, runner, mpABCIs[0], mempool.ReapBytes(maxBytes))
 
 	cancel()
 	for err := range l.NodeRuntimeErrs() {
 		t.Log("runtime err: ", err)
 	}
+}
+
+func applyReapedBlock(ctx context.Context, t *testing.T, runner *reapTracker, mp *mempool.ABCI, opts ...mempool.ReapOptFn) {
+	t.Helper()
+
+	consensusBlock := runner.reapTxs(ctx, mp, opts...)
+
+	finishFn, err := mp.PrepBlockFinality(ctx)
+	require.NoError(t, err)
+	defer finishFn()
+
+	err = mp.AfterBlockFinality(ctx, consensusBlock, nil, nil, nil)
+	require.NoError(t, err)
 }
 
 type reapTracker struct {

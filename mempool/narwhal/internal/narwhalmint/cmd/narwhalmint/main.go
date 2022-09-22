@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -28,9 +29,9 @@ func newCMD() *cobra.Command {
 type builder struct {
 	outputDir  string
 	batchSize  int
-	fromDir    string
 	headerSize int
 	host       string
+	logLevel   string
 	p2pPort    string
 	primaries  int
 	proxyApp   string
@@ -49,7 +50,6 @@ func (b *builder) cmd() *cobra.Command {
 	b.registerNarwhalConfigFlags(&cmd)
 	b.registerOutputFlag(&cmd)
 	b.registerTMFlags(&cmd)
-	cmd.Flags().StringVar(&b.fromDir, "from", "", "restart existing TM cluster")
 	cmd.Flags().IntVar(&b.primaries, "narwhal-primaries", 4, "number of narwhal primaries")
 
 	cmd.AddCommand(
@@ -63,12 +63,41 @@ func (b *builder) cmd() *cobra.Command {
 func (b *builder) cmdRunE(cmd *cobra.Command, args []string) error {
 	ctx, cancel := context.WithCancel(cmd.Context())
 	defer cancel()
-	if b.fromDir != "" {
-		return b.startFrom(ctx, cmd.OutOrStdout())
+
+	startFn := b.startNew
+	if configsExists(b.outputDir) {
+		startFn = b.startFrom
 	}
 
-	w := cmd.OutOrStdout()
+	err := startFn(ctx, cmd.OutOrStdout())
+	if err != nil {
+		return err
+	}
 
+	<-ctx.Done()
+	return nil
+}
+
+func (b *builder) startFrom(ctx context.Context, w io.Writer) error {
+	ltm, lnarwhal := b.newLaunchers(w)
+
+	w.Write([]byte("starting narwhal nodes from " + b.outputDir + "...\n"))
+	err := lnarwhal.StartFrom(ctx, b.outputDir)
+	if err != nil {
+		return err
+	}
+
+	w.Write([]byte("starting tendermint nodes from " + b.outputDir + "...\n"))
+	err = ltm.StartFrom(ctx, b.outputDir)
+	if err != nil {
+		return err
+	}
+	w.Write([]byte("nodes started successfully\n"))
+
+	return nil
+}
+
+func (b *builder) startNew(ctx context.Context, w io.Writer) error {
 	ltm, lnarwhal := b.newLaunchers(w)
 
 	w.Write([]byte("setting up FS...\n"))
@@ -90,19 +119,7 @@ func (b *builder) cmdRunE(cmd *cobra.Command, args []string) error {
 	}
 	w.Write([]byte("nodes started successfully\n"))
 
-	<-ctx.Done()
 	return nil
-}
-
-func (b *builder) startFrom(ctx context.Context, w io.Writer) error {
-	ltm, lnarwhal := b.newLaunchers(w)
-
-	err := lnarwhal.StartFrom(ctx, b.fromDir)
-	if err != nil {
-		return err
-	}
-
-	return ltm.StartFrom(ctx, b.fromDir)
 }
 
 func (b *builder) cmdConfigGen() *cobra.Command {
@@ -194,6 +211,7 @@ func (b *builder) newLaunchers(out io.Writer) (*narwhalmint.LauncherTendermint, 
 
 	ltm := narwhalmint.LauncherTendermint{
 		Host:         b.host,
+		LogLevel:     b.logLevel,
 		OutputDir:    b.outputDir,
 		ProxyAppType: b.proxyApp,
 		Out:          out,
@@ -237,4 +255,21 @@ func (b *builder) registerOutputFlag(cmd *cobra.Command) {
 
 func (b *builder) registerTMFlags(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&b.proxyApp, "proxy-app", "persistent_kvstore", "TM proxy app")
+	cmd.Flags().StringVar(&b.logLevel, "log-level", "", "log level for TM nodes; defaults to info")
+}
+
+func configsExists(root string) bool {
+	dirs := []string{
+		root,
+		filepath.Join(root, "tendermint"),
+		filepath.Join(root, "narwhal"),
+	}
+	for _, dir := range dirs {
+		stat, err := os.Stat(dir)
+		if err != nil || !stat.IsDir() {
+			return false
+		}
+	}
+
+	return true
 }

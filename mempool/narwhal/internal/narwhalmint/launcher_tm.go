@@ -39,6 +39,7 @@ type TMClient struct {
 
 type LauncherTendermint struct {
 	Host                  string
+	LogLevel              string
 	Out                   io.Writer
 	OutputDir             string
 	ProxyAppType          string
@@ -263,6 +264,9 @@ func (l *LauncherTendermint) runTMValidatorCmd(
 		"--home", l.dirs.nodeDir(nodeName),
 		"--proxy_app", l.ProxyAppType,
 	}
+	if l.LogLevel != "" {
+		args = append(args, "--log_level", l.LogLevel)
+	}
 	return fn(ctx, mf, args)
 }
 
@@ -403,7 +407,7 @@ func (l *LauncherTendermint) setupTMFS(cfg *config.Config, now time.Time, opts [
 		cfg.P2P.ListenAddress = newListenAddr(l.Host, node.p2p)
 		cfg.P2P.AddrBookStrict = false
 		cfg.P2P.AllowDuplicateIP = true
-		cfg.P2P.PersistentPeers = persistentPeerFn(node.name)
+		cfg.P2P.Seeds = persistentPeerFn(node.name)
 		cfg.Moniker = moniker()
 		config.WriteConfigFile(l.dirs.configFile(node.name), cfg)
 		nodeNames = append(nodeNames, node.name)

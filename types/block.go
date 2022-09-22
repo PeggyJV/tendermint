@@ -1124,6 +1124,20 @@ func (d *DAGCollections) Hash() []byte {
 	return merkle.HashFromByteSlices(b)
 }
 
+func (d *DAGCollections) Count() int {
+	if d == nil {
+		return 0
+	}
+
+	total := 0
+	if len(d.RootCollection) > 0 {
+		total++
+	}
+	total += len(d.ExtraCollections)
+
+	return total
+}
+
 // -----------------------------------------------------------------------------
 
 // EvidenceData contains any evidence of malicious wrong-doing by validators

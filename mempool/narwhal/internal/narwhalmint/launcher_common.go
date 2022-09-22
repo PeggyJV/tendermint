@@ -180,9 +180,12 @@ func awaitFn(ctx context.Context, readyMsgStream <-chan readyMsg, msgFn func(msg
 }
 
 func newLogFileWriter(filename string) (io.Writer, func() error, error) {
-	f, err := os.Create(filename)
+	f, err := os.OpenFile(filename, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0666)
+	if os.IsNotExist(err) {
+		f, err = os.Create(filename)
+	}
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create log file: %w", err)
+		return nil, nil, fmt.Errorf("failed to open log file: %w", err)
 	}
 
 	buf := bufio.NewWriter(f)

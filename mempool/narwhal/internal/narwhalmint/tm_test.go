@@ -19,6 +19,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	tmmath "github.com/tendermint/tendermint/libs/math"
 	"github.com/tendermint/tendermint/mempool/narwhal/internal/narwhalmint"
 	coretypes "github.com/tendermint/tendermint/rpc/core/types"
 	"github.com/tendermint/tendermint/types"
@@ -49,11 +50,7 @@ func Benchmark_TM_Narwhal(b *testing.B) {
 	b.StartTimer()
 	defer b.StopTimer()
 
-	select {
-	case <-ctx.Done():
-		return
-	case <-runner.watchClientTxSubmissions(ctx, b, 2*time.Second):
-	}
+	streamOn(ctx, runner.watchClientTxSubmissions(ctx, b, 2*time.Second))
 }
 
 func Test_TM_Narwhal_resume(t *testing.T) {
@@ -74,18 +71,14 @@ func Test_TM_Narwhal_resume(t *testing.T) {
 
 	clients := ltm.Clients()
 
-	runner := newTMClientRunner(clients, 400000, 100)
+	runner := newTMClientRunner(clients, 400_000, 100)
 	defer func() {
 		runner.printRunStats(t)
 		writeTestStats(t, rootDir, start, runner.runtimeStats())
 	}()
 
 	t.Log(nowTS(), "submitting client Txs: max_txs=", runner.maxTxs, " max_concurrent=", runner.maxConcurrent, " txs/client: ", runner.totalTxsPerClient)
-	select {
-	case <-ctx.Done():
-		return
-	case <-runner.watchClientTxSubmissions(ctx, t, 2*time.Second):
-	}
+	streamOn(ctx, runner.watchClientTxSubmissions(ctx, t, 2*time.Second))
 }
 
 func Test_TM_Narwhal(t *testing.T) {
@@ -111,53 +104,26 @@ func Test_TM_Narwhal(t *testing.T) {
 
 	t.Log(nowTS(), "submitting client Txs: max_txs=", runner.maxTxs, " max_concurrent=", runner.maxConcurrent, " txs/client: ", runner.totalTxsPerClient)
 
-	select {
-	case <-ctx.Done():
+	if !streamOn(ctx, runner.watchClientTxSubmissions(ctx, t, 2*time.Second)) {
 		return
-	case <-runner.watchClientTxSubmissions(ctx, t, 2*time.Second):
-		// happy path, progress further
 	}
 
-	for _, info := range runner.nodeStatuses(ctx) {
-		if info.err != nil {
-			t.Logf("error obtaining sync info for %s: %s", info.name, info.err)
-			continue
-		}
-		t.Log(info.name)
-		cl := findClientByName(info.name, clients)
-		si := info.status.SyncInfo
-		for i := si.EarliestBlockHeight; i <= si.LatestBlockHeight; i++ {
-			block, err := cl.Block(ctx, &i)
-			require.NoError(t, err)
-			require.NotNil(t, block.Block)
-			txs := block.Block.Txs
-			colls := block.Block.Collections
+	runner.reportNodeStatuses(ctx, t, clients)
+}
 
-			collCount := 0
-			if colls != nil {
-				collCount += 1 + len(colls.ExtraCollections)
-			}
-
-			t.Logf("  height %d for block %s has %d txs and %d collections", i, block.BlockID, len(txs), collCount)
-			t.Logf("\tblock header: %#v", block.Block.Header)
-			if len(txs) == 0 {
-				continue
-			}
-			showTxs := txs
-			if len(txs) > 5 {
-				showTxs = showTxs[:5]
-			}
-			t.Logf("\tshowing %d of %d total txs", len(showTxs), len(txs))
-			for _, tx := range showTxs {
-				t.Logf("\ttx:\t%s", string(tx))
-			}
-		}
+func streamOn[T any](ctx context.Context, stream <-chan T) bool {
+	select {
+	case <-ctx.Done():
+		return false
+	case <-stream:
+		return true
 	}
 }
 
 type narwhalTMOpts struct {
 	BatchSize      int
 	HeaderSize     int
+	LogLvl         string
 	NarwhalHost    string
 	Primaries      int
 	Workers        int
@@ -243,6 +209,7 @@ func startDefaultTMNodes(ctx context.Context, tb testing.TB, tmOpts []narwhalmin
 
 	ltm := narwhalmint.LauncherTendermint{
 		Host:                  "localhost",
+		LogLevel:              opts.LogLvl,
 		ProxyAppType:          "noop",
 		RunValidatorInProcess: opts.RunTMInProcess,
 	}
@@ -461,6 +428,46 @@ func (r *tmClientRunner) nodeStatuses(ctx context.Context) []tmNodeStatus {
 		return out[i].name < out[j].name
 	})
 	return out
+}
+
+func (r *tmClientRunner) reportNodeStatuses(ctx context.Context, t *testing.T, clients []*narwhalmint.TMClient) {
+	t.Helper()
+
+	for _, info := range r.nodeStatuses(ctx) {
+		if info.err != nil {
+			t.Logf("error obtaining sync info for %s: %s", info.name, info.err)
+			continue
+		}
+		t.Log(info.name)
+		cl := findClientByName(info.name, clients)
+		si := info.status.SyncInfo
+		for i := tmmath.Max(si.EarliestBlockHeight, si.LatestBlockHeight-10); i <= si.LatestBlockHeight; i++ {
+			block, err := cl.Block(ctx, &i)
+			require.NoError(t, err)
+			require.NotNil(t, block.Block)
+			txs := block.Block.Txs
+			colls := block.Block.Collections
+
+			collCount := 0
+			if colls != nil {
+				collCount += 1 + len(colls.ExtraCollections)
+			}
+
+			t.Logf("  height %d for block %s has %d txs and %d collections", i, block.BlockID, len(txs), collCount)
+			t.Logf("\tblock header: %#v", block.Block.Header)
+			if len(txs) == 0 {
+				continue
+			}
+			showTxs := txs
+			if len(txs) > 5 {
+				showTxs = showTxs[:5]
+			}
+			t.Logf("\tshowing %d of %d total txs", len(showTxs), len(txs))
+			for _, tx := range showTxs {
+				t.Logf("\ttx:\t%s", string(tx))
+			}
+		}
+	}
 }
 
 func (r *tmClientRunner) watchClientTxSubmissions(ctx context.Context, tb testing.TB, checkDur time.Duration) <-chan struct{} {
