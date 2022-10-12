@@ -12,20 +12,22 @@ via docker-compose (included in the docker_run pkg).
 ### Running narwhalmint tests (recommended)
 
 1. From the root of TM directory: `go install cmd/tendermint`
-2. Clone the [narwhal repo](https://github.com/MystenLabs/narwhal): `git clone git@github.com:MystenLabs/narwhal.git`
+2. Clone the [narwhal repo](https://github.com/MystenLabs/sui/narwhal): `git clone git@github.com:MystenLabs/sui.git`
    * note: narwhal has a list of its own prereqs (including rust/python/fab/etc) you will need to install next
 3. set a narwhal env var: `export narwhal=$PATH_TO_NARWHAL_REPO`
 4. cd into `$narwhal/benchmark`
 5. run: `fab local`
    * note: this will compile the narwhal binary to the target/release folder within the
      narwhal repo and execute the binary for a short test to verify the narwhal binary is working
-6. Next move the target node into your path renamed to `narwhal_node`, something like `mv $narwhal/target/release/node $GOBIN/narwhal_node`
+6. Next move the target node into your path renamed to `narwhal_node`, something like `mv $narwhal/target/release/narwhal-node $GOBIN/narwhal_node`
    * note: if you use the example command you will need to make sure $GOBIN is in your path
 7. all the prereqs are accounted for now, you may run go tests from within the `narwhalmint` pkg
    * note: you will need to add the `narwhal` build tag: `go test -tags narwhal`
    * note: with the high number of concurrent requests, you will likely want to increase the emphemeral port range before executing tests. To do so run: ` sudo sysctl -w net.inet.ip.portrange.first=32768 `
 
 ### Running docker-compose test
+
+WARNING: OUT OF DATE
 
 1. install docker to a relatively recent stable version
    * note: as of writing this, I have verified tests run with Docker Desktop 4.11.1 (84025) with on a m1 max macbook pro

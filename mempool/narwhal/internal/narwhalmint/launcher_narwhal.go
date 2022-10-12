@@ -679,6 +679,10 @@ func writeParametersFile(filename, grpcAddr string, batchSize, headerSize int) e
     "max_batch_delay": "200ms",
     "max_concurrent_requests": 500000,
     "max_header_delay": "500ms",
+	"network_admin_server": {
+		"primary_network_admin_server_port": 0,
+		"worker_network_admin_server_base_port": 0
+	},
     "prometheus_metrics": {
         "socket_addr": "/ip4/127.0.0.1/tcp/0/http"
     },
