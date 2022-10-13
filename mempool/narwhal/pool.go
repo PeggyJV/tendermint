@@ -77,6 +77,11 @@ func New(ctx context.Context, cfg *config.NarwhalMempoolConfig, opts ...PoolOpti
 }
 
 func (p *Pool) CheckTxCallback(ctx context.Context, tx types.Tx, res *abci.ResponseCheckTx, txInfo mempool.TxInfo) mempool.OpResult {
+	start := time.Now()
+	defer func() {
+		p.logger.Debug("submit tx to narwhal", "took", time.Since(start).String())
+	}()
+
 	workerC := p.workerSelectFn()
 	err := workerC.SubmitTransaction(ctx, tx, res.GasWanted)
 	if err != nil {
@@ -138,9 +143,9 @@ func (p *Pool) OnBlockFinality(ctx context.Context, block *types.Block, newPreFn
 }
 
 func (p *Pool) Reap(ctx context.Context, opts mempool.ReapOption) (mempool.ReapResults, error) {
-	collections, err := p.primaryC.NextBlockCerts(ctx, opts)
+	collections, err := p.nextBlockCerts(ctx, opts)
 	if err != nil {
-		return mempool.ReapResults{}, fmt.Errorf("failed to obtain collections: %w", err)
+		return mempool.ReapResults{}, err
 	}
 
 	txs, err := p.txsFromColls(ctx, collections)
@@ -154,12 +159,30 @@ func (p *Pool) Reap(ctx context.Context, opts mempool.ReapOption) (mempool.ReapR
 	}, nil
 }
 
+func (p *Pool) nextBlockCerts(ctx context.Context, opts mempool.ReapOption) (colls *types.DAGCollections, _ error) {
+	start := time.Now()
+	defer func() {
+		p.logger.Info("next block certs obtained", "num_collections", colls.Count(), "took", time.Since(start).String())
+	}()
+
+	collections, err := p.primaryC.NextBlockCerts(ctx, opts)
+	if err != nil {
+		return nil, fmt.Errorf("failed to obtain collections: %w", err)
+	}
+	return collections, nil
+}
+
 func (p *Pool) Recheck(ctx context.Context, appConn proxy.AppConnMempool) (mempool.OpResult, error) {
 	// noop
 	return mempool.OpResult{}, nil
 }
 
 func (p *Pool) Remove(ctx context.Context, opts mempool.RemOption) (mempool.OpResult, error) {
+	start := time.Now()
+	defer func() {
+		p.logger.Info("remove certs obtained", "num_collections", opts.Collections.Count(), "took", time.Since(start).String())
+	}()
+
 	if opts.Collections == nil {
 		return mempool.OpResult{}, nil
 	}
@@ -171,7 +194,11 @@ func (p *Pool) Remove(ctx context.Context, opts mempool.RemOption) (mempool.OpRe
 	return mempool.OpResult{Status: mempool.StatusTxsAvailable}, nil
 }
 
-func (p *Pool) txsFromColls(ctx context.Context, coll *types.DAGCollections) (types.Txs, error) {
+func (p *Pool) txsFromColls(ctx context.Context, coll *types.DAGCollections) (txs types.Txs, _ error) {
+	start := time.Now()
+	defer func() {
+		p.logger.Info("txs from colls obtained", "num_colls", coll.Count(), "num_txs", len(txs), "took", time.Since(start).String())
+	}()
 	if coll == nil {
 		return nil, errors.New("invalid <nil> Collections for hydrating block data")
 	}

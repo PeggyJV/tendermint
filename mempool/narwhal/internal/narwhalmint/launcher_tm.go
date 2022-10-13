@@ -43,6 +43,7 @@ type LauncherTendermint struct {
 	Out                   io.Writer
 	OutputDir             string
 	ProxyAppType          string
+	ReapDuration          time.Duration
 	RunValidatorInProcess bool
 
 	mNodeCFGs        map[string]*config.Config
@@ -67,11 +68,12 @@ func (l *LauncherTendermint) Clients() []*TMClient {
 
 type (
 	TMOpts struct {
-		Host       string
-		NodeName   string
-		P2PPort    string
-		RPCPort    string
-		NarwhalCFG *config.NarwhalMempoolConfig
+		Host         string
+		NodeName     string
+		P2PPort      string
+		RPCPort      string
+		ReapDuration time.Duration
+		NarwhalCFG   *config.NarwhalMempoolConfig
 	}
 
 	RenameOpt struct {
@@ -402,6 +404,11 @@ func (l *LauncherTendermint) setupTMFS(cfg *config.Config, now time.Time, opts [
 			return nil, fmt.Errorf("failed to save genesis doc: %w", err)
 		}
 		cfg.Consensus.ConsensusStrategy = "meta_only"
+		waitDur := l.ReapDuration
+		if opt.ReapDuration > 0 {
+			waitDur = opt.ReapDuration
+		}
+		cfg.Mempool.ReapWaitDur = waitDur
 		cfg.Narwhal = narwhalCFG
 		cfg.RPC.ListenAddress = newListenAddr(l.Host, node.rpc)
 		cfg.P2P.ListenAddress = newListenAddr(l.Host, node.p2p)

@@ -677,10 +677,11 @@ func DefaultFuzzConnConfig() *FuzzConnConfig {
 
 // MempoolConfig defines the configuration options for the Tendermint mempool
 type MempoolConfig struct {
-	RootDir   string `mapstructure:"home"`
-	Recheck   bool   `mapstructure:"recheck"`
-	Broadcast bool   `mapstructure:"broadcast"`
-	WalPath   string `mapstructure:"wal_dir"`
+	RootDir     string        `mapstructure:"home"`
+	ReapWaitDur time.Duration `mapstructure:"reap_wait_duration"`
+	Recheck     bool          `mapstructure:"recheck"`
+	Broadcast   bool          `mapstructure:"broadcast"`
+	WalPath     string        `mapstructure:"wal_dir"`
 	// Maximum number of transactions in the mempool
 	Size int `mapstructure:"size"`
 	// Limit the total size of all txs in the mempool.

@@ -215,6 +215,9 @@ func (a *ABCI) PrepBlockFinality(_ context.Context) (func(), error) {
 
 // Reap calls the underlying pool's Reap method with the given options.
 func (a *ABCI) Reap(ctx context.Context, opts ...ReapOptFn) (ReapResults, error) {
+	ctx, cancel := a.newCtx(ctx)
+	defer cancel()
+
 	opt := CoalesceReapOpts(opts...)
 	res, err := a.pool.Reap(ctx, opt)
 	if err != nil {
@@ -309,4 +312,11 @@ func (a *ABCI) notifyTxsAvailable() {
 	case a.txsAvailable <- struct{}{}:
 	default:
 	}
+}
+
+func (a *ABCI) newCtx(ctx context.Context) (context.Context, func()) {
+	if a.cfg.ReapWaitDur == 0 {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, a.cfg.ReapWaitDur)
 }

@@ -387,6 +387,8 @@ recheck = {{ .Mempool.Recheck }}
 broadcast = {{ .Mempool.Broadcast }}
 wal_dir = "{{ js .Mempool.WalPath }}"
 
+reap_wait_duration = "{{ .Mempool.ReapWaitDur }}"
+
 # Maximum number of transactions in the mempool
 size = {{ .Mempool.Size }}
 

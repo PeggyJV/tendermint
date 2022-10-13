@@ -35,6 +35,7 @@ type builder struct {
 	p2pPort    string
 	primaries  int
 	proxyApp   string
+	reapDur    time.Duration
 	rpcPort    string
 	workers    int
 }
@@ -214,6 +215,7 @@ func (b *builder) newLaunchers(out io.Writer) (*narwhalmint.LauncherTendermint, 
 		LogLevel:     b.logLevel,
 		OutputDir:    b.outputDir,
 		ProxyAppType: b.proxyApp,
+		ReapDuration: b.reapDur,
 		Out:          out,
 	}
 
@@ -256,6 +258,7 @@ func (b *builder) registerOutputFlag(cmd *cobra.Command) {
 func (b *builder) registerTMFlags(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&b.proxyApp, "proxy-app", "persistent_kvstore", "TM proxy app")
 	cmd.Flags().StringVar(&b.logLevel, "log-level", "", "log level for TM nodes; defaults to info")
+	cmd.Flags().DurationVar(&b.reapDur, "max-reap-duration", 15*time.Second, "maximum time to wait for reaping the next block to complete")
 }
 
 func configsExists(root string) bool {

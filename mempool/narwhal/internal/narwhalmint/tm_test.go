@@ -359,9 +359,11 @@ func (r *tmClientRunner) printRunStats(tb testing.TB) {
 }
 
 type tmNodeStatus struct {
-	name   string
-	err    error
-	status *coretypes.ResultStatus
+	name       string
+	status     *coretypes.ResultStatus
+	statusErr  error
+	netInfo    *coretypes.ResultNetInfo
+	netInfoErr error
 }
 
 func (r *tmClientRunner) printSyncInfo(ctx context.Context, tb testing.TB) {
@@ -374,11 +376,17 @@ func (r *tmClientRunner) printSyncInfo(ctx context.Context, tb testing.TB) {
 	for _, st := range r.nodeStatuses(ctx) {
 		curTx, totalErrs, progress := r.mStats[st.name].stats()
 		part := fmt.Sprintf("%s: { cur_tx: %d, progress: %0.3f%%, errs: %d, ", st.name, curTx, progress, totalErrs)
-		if st.err != nil {
-			part += fmt.Sprintf("status_err: %s", st.err.Error())
+		if st.statusErr != nil {
+			part += fmt.Sprintf("status_err: %s, ", st.statusErr.Error())
 		} else {
 			si := st.status.SyncInfo
-			part += fmt.Sprintf("lbh: %d", si.LatestBlockHeight)
+			part += fmt.Sprintf("lbh: %d, ", si.LatestBlockHeight)
+		}
+		if st.netInfoErr != nil {
+			part += fmt.Sprintf("net_info_err: %s", st.netInfoErr.Error())
+		} else {
+			ni := st.netInfo
+			part += fmt.Sprintf("net_info: { peers: %d,  listeners: %v }", ni.NPeers, ni.Listeners)
 		}
 		parts[st.name] = part + " }"
 		names = append(names, st.name)
@@ -409,11 +417,15 @@ func (r *tmClientRunner) nodeStatuses(ctx context.Context) []tmNodeStatus {
 			go func(client *narwhalmint.TMClient) {
 				defer wg.Done()
 
-				st, err := client.Status(ctx)
+				st, statusErr := client.Status(ctx)
+				netInfo, netErr := client.NetInfo(ctx)
+
 				statusStream <- tmNodeStatus{
-					name:   client.NodeName,
-					err:    err,
-					status: st,
+					name:       client.NodeName,
+					status:     st,
+					statusErr:  statusErr,
+					netInfo:    netInfo,
+					netInfoErr: netErr,
 				}
 			}(clients[i])
 		}
@@ -434,26 +446,25 @@ func (r *tmClientRunner) reportNodeStatuses(ctx context.Context, t *testing.T, c
 	t.Helper()
 
 	for _, info := range r.nodeStatuses(ctx) {
-		if info.err != nil {
-			t.Logf("error obtaining sync info for %s: %s", info.name, info.err)
+		if info.statusErr != nil {
+			t.Logf("error obtaining sync info for %s: %s", info.name, info.statusErr)
+			continue
+		}
+		cl := findClientByName(info.name, clients)
+		si := info.status.SyncInfo
+		start := tmmath.Max(si.EarliestBlockHeight, si.LatestBlockHeight-10)
+		if start == 0 {
+			t.Log(info.name + " at height zero... skipping")
 			continue
 		}
 		t.Log(info.name)
-		cl := findClientByName(info.name, clients)
-		si := info.status.SyncInfo
-		for i := tmmath.Max(si.EarliestBlockHeight, si.LatestBlockHeight-10); i <= si.LatestBlockHeight; i++ {
+		for i := start; i <= si.LatestBlockHeight; i++ {
 			block, err := cl.Block(ctx, &i)
 			require.NoError(t, err)
 			require.NotNil(t, block.Block)
-			txs := block.Block.Txs
-			colls := block.Block.Collections
+			txs, colls := block.Block.Txs, block.Block.Collections
 
-			collCount := 0
-			if colls != nil {
-				collCount += 1 + len(colls.ExtraCollections)
-			}
-
-			t.Logf("  height %d for block %s has %d txs and %d collections", i, block.BlockID, len(txs), collCount)
+			t.Logf("  height %d for block %s has %d txs and %d collections", i, block.BlockID, len(txs), colls.Count())
 			t.Logf("\tblock header: %#v", block.Block.Header)
 			if len(txs) == 0 {
 				continue
@@ -553,6 +564,9 @@ func (r *tmClientRunner) submitTMTxs(ctx context.Context, cl *narwhalmint.TMClie
 			}
 			select {
 			case <-ctx.Done():
+				if msg.took == 0 {
+					msg.took = time.Since(start)
+				}
 			case msgStream <- msg:
 			}
 		}(i)
@@ -628,7 +642,7 @@ func (r *tmClientRunner) runtimeStats() testStats {
 			Name:              node,
 			MaxTxs:            r.totalTxsPerClient,
 			PercentSuccessful: stringPerc(txsSuccess),
-			RateTxsPerSec:     float64(curTx) / st.took.Seconds(),
+			RateTxsPerSec:     float64(curTx) / tmmath.Max(st.took.Seconds(), 0.001),
 			Took:              prettyDur{st.took},
 			TotalErrs:         nTotalErrs,
 			TotalTxsSubmitted: curTx,
