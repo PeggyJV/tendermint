@@ -27,17 +27,19 @@ func newCMD() *cobra.Command {
 }
 
 type builder struct {
-	outputDir  string
-	batchSize  int
-	headerSize int
-	host       string
-	logLevel   string
-	p2pPort    string
-	primaries  int
-	proxyApp   string
-	reapDur    time.Duration
-	rpcPort    string
-	workers    int
+	outputDir   string
+	batchSize   int
+	batchDelay  time.Duration
+	headerSize  int
+	headerDelay time.Duration
+	host        string
+	logLevel    string
+	p2pPort     string
+	primaries   int
+	proxyApp    string
+	reapDur     time.Duration
+	rpcPort     string
+	workers     int
 }
 
 func (b *builder) cmd() *cobra.Command {
@@ -201,13 +203,15 @@ func (b *builder) configGenRunE(cmd *cobra.Command, _ []string) error {
 
 func (b *builder) newLaunchers(out io.Writer) (*narwhalmint.LauncherTendermint, *narwhalmint.LauncherNarwhal) {
 	lnarwhal := narwhalmint.LauncherNarwhal{
-		BatchSize:  b.batchSize,
-		HeaderSize: b.headerSize,
-		Host:       b.host,
-		OutputDir:  b.outputDir,
-		Primaries:  b.primaries,
-		Workers:    b.workers,
-		Out:        out,
+		BatchSize:   b.batchSize,
+		BatchDelay:  b.batchDelay,
+		HeaderSize:  b.headerSize,
+		HeaderDelay: b.headerDelay,
+		Host:        b.host,
+		OutputDir:   b.outputDir,
+		Primaries:   b.primaries,
+		Workers:     b.workers,
+		Out:         out,
 	}
 
 	ltm := narwhalmint.LauncherTendermint{
@@ -244,7 +248,9 @@ func (b *builder) registerHostFlag(cmd *cobra.Command) {
 
 func (b *builder) registerNarwhalConfigFlags(cmd *cobra.Command) {
 	cmd.Flags().IntVar(&b.batchSize, "batch-size", 1<<14, "size of narwhal worker batches in bytes")
+	cmd.Flags().DurationVar(&b.batchDelay, "batch-delay", 200*time.Millisecond, "max delay for batches to aggregate")
 	cmd.Flags().IntVar(&b.headerSize, "header-size", 1<<8, "narwhal worker batches per header")
+	cmd.Flags().DurationVar(&b.headerDelay, "header-delay", time.Second, "max delay for collections to aggregate")
 	cmd.Flags().IntVar(&b.workers, "narwhal-workers", 1, "number of narwhal workers per primary")
 }
 

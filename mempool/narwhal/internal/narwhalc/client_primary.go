@@ -7,7 +7,10 @@ import (
 	"encoding/gob"
 	"fmt"
 	"strings"
+	"time"
 
+	"github.com/tendermint/tendermint/crypto"
+	"github.com/tendermint/tendermint/libs/log"
 	"github.com/tendermint/tendermint/mempool"
 	"github.com/tendermint/tendermint/mempool/narwhal/internal/narwhalproto"
 	"github.com/tendermint/tendermint/types"
@@ -16,6 +19,7 @@ import (
 // PrimaryClient is the grpc Validator service client with additional
 // cluster information for debugging/error handling.
 type PrimaryClient struct {
+	logger    log.Logger
 	publicKey []byte
 
 	vc narwhalproto.ValidatorClient
@@ -25,7 +29,7 @@ type PrimaryClient struct {
 
 // NewPrimaryClient constructs a primary node client from the gprc conn and the additional
 // metadata used to identify the narwhal node.
-func NewPrimaryClient(ctx context.Context, nodeEncodedPK, addr string) (*PrimaryClient, error) {
+func NewPrimaryClient(ctx context.Context, logger log.Logger, nodeEncodedPK, addr string) (*PrimaryClient, error) {
 	cc, err := newGRPCConnection(ctx, addr)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create grpc connection for primary with addr(%s): %w", addr, err)
@@ -37,9 +41,10 @@ func NewPrimaryClient(ctx context.Context, nodeEncodedPK, addr string) (*Primary
 	}
 
 	return &PrimaryClient{
+		logger:    logger,
+		publicKey: publicKey,
 		vc:        narwhalproto.NewValidatorClient(cc),
 		pc:        narwhalproto.NewProposerClient(cc),
-		publicKey: publicKey,
 		clientBase: clientBase{
 			meta: NodeMeta{
 				Name: nodeEncodedPK,
@@ -51,6 +56,8 @@ func NewPrimaryClient(ctx context.Context, nodeEncodedPK, addr string) (*Primary
 }
 
 func (p *PrimaryClient) DAGCollectionTXs(ctx context.Context, colls types.DAGCollections) (types.Txs, error) {
+	ctx = withTraceID(ctx)
+
 	causalColls, err := p.certsFrom(ctx, hexBytesToProtoCert(colls.RootCollection))
 	if err != nil {
 		return nil, fmt.Errorf("failed to traverse DAG from starting root collection %s", string(colls.RootCollection))
@@ -68,13 +75,15 @@ func (p *PrimaryClient) DAGCollectionTXs(ctx context.Context, colls types.DAGCol
 
 // certTXs returns the transactions associated to the given collections.
 func (p *PrimaryClient) certTXs(ctx context.Context, collDigests ...*narwhalproto.CertificateDigest) (types.Txs, error) {
+	pairs := []any{"num_colls", len(collDigests)}
+	logFn := logDurs(ctx, p.logger, "certTXs")
+	defer func() { logFn(pairs...) }()
+
 	if len(collDigests) == 0 {
 		return nil, nil
 	}
 
-	resp, err := p.vc.GetCollections(ctx, &narwhalproto.GetCollectionsRequest{
-		CollectionIds: collDigests,
-	})
+	resp, err := narwhalGetCollections(ctx, p.logger, p.vc, collDigests)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get collection: %w", err)
 	}
@@ -83,6 +92,7 @@ func (p *PrimaryClient) certTXs(ctx context.Context, collDigests ...*narwhalprot
 	if err != nil {
 		return nil, fmt.Errorf("failed to take txs from collection results: %w", err)
 	}
+	pairs = append(pairs, "num_txs", len(txs))
 
 	var out types.Txs
 	for _, tx := range txs {
@@ -99,6 +109,9 @@ func (p *PrimaryClient) certTXs(ctx context.Context, collDigests ...*narwhalprot
 }
 
 func (p *PrimaryClient) RemoveDAGCollections(ctx context.Context, colls types.DAGCollections) error {
+	ctx = withTraceID(ctx)
+	defer logDurs(ctx, p.logger, "RemoveDAGCollections")("num_colls", colls.Count())
+
 	allColls, err := p.dagCollectionProtoCerts(ctx, colls)
 	if err != nil {
 		return err
@@ -107,6 +120,10 @@ func (p *PrimaryClient) RemoveDAGCollections(ctx context.Context, colls types.DA
 }
 
 func (p *PrimaryClient) dagCollectionProtoCerts(ctx context.Context, colls types.DAGCollections) ([]*narwhalproto.CertificateDigest, error) {
+	pairs := []any{"num_colls", colls.Count()}
+	logFn := logDurs(ctx, p.logger, "dagCollectionProtoCerts")
+	defer func() { logFn(pairs...) }()
+
 	rootTreeCollections, err := p.certsFrom(ctx, hexBytesToProtoCert(colls.RootCollection))
 	if err != nil {
 		return nil, err
@@ -144,8 +161,12 @@ func (p *PrimaryClient) removeCollections(ctx context.Context, collDigests ...*n
 // also returning the additional collection IDs that can be added to the block from later rounds that may be sibling
 // and/or not included from the BFS from the starting collection ID via ReadCausal.
 func (p *PrimaryClient) NextBlockCerts(ctx context.Context, opts mempool.ReapOption) (*types.DAGCollections, error) {
+	ctx = withTraceID(ctx)
+	defer logDurs(ctx, p.logger, "NextBlockCerts")()
+
 	causalCollection, collections, err := nextBlockCollections(ctx, nextBlockIn{
 		opts:      opts,
+		logger:    p.logger,
 		publicKey: p.publicKey,
 		pc:        p.pc,
 		vc:        p.vc,
@@ -162,6 +183,7 @@ func (p *PrimaryClient) NextBlockCerts(ctx context.Context, opts mempool.ReapOpt
 
 type nextBlockIn struct {
 	opts      mempool.ReapOption
+	logger    log.Logger
 	publicKey []byte
 
 	pc narwhalproto.ProposerClient
@@ -172,6 +194,7 @@ func nextBlockCollections(ctx context.Context, in nextBlockIn) (causalCollection
 	prep := &blockPrep{
 		blockGasLimit: in.opts.BlockSizeLimit,
 		blockTXsLimit: int64(in.opts.NumTxs),
+		logger:        in.logger,
 		publicKey: narwhalproto.PublicKey{
 			Bytes: in.publicKey,
 		},
@@ -186,6 +209,7 @@ type blockPrep struct {
 	blockSizeBytesLimit int64
 	blockGasLimit       int64
 	blockTXsLimit       int64
+	logger              log.Logger
 	publicKey           narwhalproto.PublicKey
 
 	pc narwhalproto.ProposerClient
@@ -195,13 +219,15 @@ type blockPrep struct {
 }
 
 func (b *blockPrep) nextBlockCollections(ctx context.Context) (*narwhalproto.CertificateDigest, []*narwhalproto.CertificateDigest, error) {
-	roundsResp, err := b.pc.Rounds(ctx, &narwhalproto.RoundsRequest{PublicKey: &b.publicKey})
+	defer logDurs(ctx, b.logger, "nextBlockCollections")()
+
+	roundsResp, err := b.rounds(ctx)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to make rounds request for pk(%s): %w", base64Encode(b.publicKey.Bytes), err)
 	}
 
 	oldest, mostRecentRound := roundsResp.OldestRound, roundsResp.NewestRound
-	currentRound := oldest + 1
+	currentRound := oldest
 	lastCompletedRound, extraCollections, err := b.nextRelevantRound(ctx, currentRound, mostRecentRound)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to get relevant block round (start=%d, oldest=%d): %w", oldest, mostRecentRound, err)
@@ -258,6 +284,10 @@ func (b *blockPrep) findRoundCollections(ctx context.Context, startRound, curren
 }
 
 func (b *blockPrep) nextRelevantRound(ctx context.Context, currentRound, mostRecentRound uint64) (lastCompletedRound uint64, extraCollections []*narwhalproto.CertificateDigest, _ error) {
+	pairs := []any{"current_round", currentRound, "most_recent_round", mostRecentRound}
+	logFn := logDurs(ctx, b.logger, "nextRelevantRound")
+	defer func() { logFn(pairs...) }()
+
 	lastCompletedRound, extraCollections, totalTxs, err := b.traverseRounds(
 		ctx,
 		currentRound, mostRecentRound,
@@ -267,6 +297,12 @@ func (b *blockPrep) nextRelevantRound(ctx context.Context, currentRound, mostRec
 	if err != nil {
 		return 0, nil, err
 	}
+	pairs = append(pairs,
+		"last_completed_round", lastCompletedRound,
+		"num_extra_colls", len(extraCollections),
+		"total_txs", totalTxs,
+	)
+
 	if totalTxs == 0 {
 		return 0, nil, fmt.Errorf("no txs associated with available DAG rounds")
 	}
@@ -279,10 +315,18 @@ func (b *blockPrep) traverseRounds(
 	proposedBlockSize, proposedBlockGasCost, proposedBlockNumTXs int64,
 	collections []*narwhalproto.CertificateDigest,
 ) (lastCompletedRound uint64, extraCollections []*narwhalproto.CertificateDigest, totalTxs int64, _ error) {
-	readCausalResp, err := b.pc.NodeReadCausal(ctx, &narwhalproto.NodeReadCausalRequest{
-		PublicKey: &b.publicKey,
-		Round:     currentRound,
-	})
+	pairs := []any{
+		"current_round", currentRound,
+		"most_recent_round", mostRecentRound,
+		"proposed_block_size", proposedBlockSize,
+		"proposed_block_gas_cost", proposedBlockGasCost,
+		"proposed_block_num_txs", proposedBlockNumTXs,
+		"num_colls", len(collections),
+	}
+	logFn := logDurs(ctx, b.logger, "traverseRounds")
+	defer func() { logFn(pairs...) }()
+
+	readCausalResp, err := b.nodeReadCausal(ctx, currentRound)
 	if err != nil {
 		if strings.Contains(err.Error(), "No known certificates for this authority") {
 			return currentRound - 1, collections, proposedBlockNumTXs, nil
@@ -302,11 +346,11 @@ func (b *blockPrep) traverseRounds(
 			continue
 		}
 
-		stats, err := b.getTxsStats(txs)
+		stats, err := b.getTxsStats(ctx, txs)
 		if err != nil {
 			return 0, nil, 0, fmt.Errorf("failed to get txs stats: %w", err)
 		}
-		proposedBlockGasCost += stats.sizeBytes
+		proposedBlockSize += stats.sizeBytes
 		proposedBlockGasCost += stats.gasWanted
 		proposedBlockNumTXs += stats.numTXs
 		if b.blockSizeExceed(proposedBlockSize) ||
@@ -336,7 +380,9 @@ func (b *blockPrep) traverseRounds(
 	return b.traverseRounds(ctx, currentRound+1, mostRecentRound, proposedBlockSize, proposedBlockGasCost, proposedBlockNumTXs, newColls)
 }
 
-func (b *blockPrep) getTxsStats(txs []*narwhalproto.Transaction) (out struct{ numTXs, sizeBytes, gasWanted int64 }, _ error) {
+func (b *blockPrep) getTxsStats(ctx context.Context, txs []*narwhalproto.Transaction) (out struct{ numTXs, sizeBytes, gasWanted int64 }, _ error) {
+	defer logDurs(ctx, b.logger, "getTxsStats")("num_txs", len(txs))
+
 	var buf bytes.Buffer
 	for _, tx := range txs {
 		if tx == nil {
@@ -374,9 +420,11 @@ func (b *blockPrep) numTXsExceeded(proposedNumTXs int64) bool {
 }
 
 func (b *blockPrep) getCollectionTxs(ctx context.Context, collections ...*narwhalproto.CertificateDigest) ([]*narwhalproto.Transaction, error) {
-	collectionResp, err := b.vc.GetCollections(ctx, &narwhalproto.GetCollectionsRequest{
-		CollectionIds: collections,
-	})
+	pairs := []any{"num_collections", len(collections)}
+	logFn := logDurs(ctx, b.logger, "getCollectionTxs")
+	defer func() { logFn(pairs...) }()
+
+	collectionResp, err := narwhalGetCollections(ctx, b.logger, b.vc, collections)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get collection IDs: %w", err)
 	}
@@ -385,6 +433,7 @@ func (b *blockPrep) getCollectionTxs(ctx context.Context, collections ...*narwha
 	if err != nil {
 		return nil, fmt.Errorf("failed to map collection results: %w", err)
 	}
+	pairs = append(pairs, "num_txs", len(txs))
 
 	return txs, nil
 }
@@ -400,6 +449,61 @@ func (b *blockPrep) getNewCollectionIDs(collectionIDs []*narwhalproto.Certificat
 		out = append(out, collectionIDs[i])
 	}
 	return out, numDuplicatesRemoved
+}
+
+func (b *blockPrep) rounds(ctx context.Context) (*narwhalproto.RoundsResponse, error) {
+	logFn := logDurs(ctx, b.logger, "rounds")
+	var pairs []any
+	defer func() { logFn(pairs...) }()
+
+	resp, err := b.pc.Rounds(ctx, &narwhalproto.RoundsRequest{PublicKey: &b.publicKey})
+	if err != nil {
+		return nil, err
+	}
+	pairs = append(pairs, "newest_round", resp.NewestRound, "oldest_round", resp.OldestRound)
+
+	return resp, nil
+}
+
+func (b *blockPrep) nodeReadCausal(ctx context.Context, currentRound uint64) (*narwhalproto.NodeReadCausalResponse, error) {
+	defer logDurs(ctx, b.logger, "nodeReadCausal")("current_round", currentRound)
+	return b.pc.NodeReadCausal(ctx, &narwhalproto.NodeReadCausalRequest{
+		PublicKey: &b.publicKey,
+		Round:     currentRound,
+	})
+}
+
+func narwhalGetCollections(ctx context.Context, logger log.Logger, vc narwhalproto.ValidatorClient, collections []*narwhalproto.CertificateDigest) (*narwhalproto.GetCollectionsResponse, error) {
+	defer logDurs(ctx, logger, "narwhalGetCollections")("num_collections", len(collections))
+	return vc.GetCollections(ctx, &narwhalproto.GetCollectionsRequest{
+		CollectionIds: collections,
+	})
+}
+
+func logDurs(ctx context.Context, logger log.Logger, op string) func(pairs ...any) {
+	start := time.Now()
+	return func(pairs ...any) {
+		took := time.Since(start).Truncate(100 * time.Microsecond).String()
+		logInfo(ctx, logger, op, append(pairs, "took", took)...)
+	}
+}
+
+func logInfo(ctx context.Context, logger log.Logger, op string, pairs ...any) {
+	id := getTraceID(ctx)
+	logger.Info(op+" completed", append(pairs, "trace_id", id)...)
+}
+
+const traceIDKey = "trace-id"
+
+func withTraceID(ctx context.Context) context.Context {
+	b := crypto.CRandBytes(24)
+	id := base64.StdEncoding.EncodeToString(b)
+	return context.WithValue(ctx, traceIDKey, id)
+}
+
+func getTraceID(ctx context.Context) string {
+	s, _ := ctx.Value(traceIDKey).(string)
+	return s
 }
 
 func takeTxsFromCollectionsResult(resp *narwhalproto.GetCollectionsResponse) ([]*narwhalproto.Transaction, error) {

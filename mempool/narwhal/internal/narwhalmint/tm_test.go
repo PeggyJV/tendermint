@@ -21,6 +21,7 @@ import (
 
 	tmmath "github.com/tendermint/tendermint/libs/math"
 	"github.com/tendermint/tendermint/mempool/narwhal/internal/narwhalmint"
+	tmhttp "github.com/tendermint/tendermint/rpc/client/http"
 	coretypes "github.com/tendermint/tendermint/rpc/core/types"
 	"github.com/tendermint/tendermint/types"
 )
@@ -103,21 +104,42 @@ func Test_TM_Narwhal(t *testing.T) {
 	}()
 
 	t.Log(nowTS(), "submitting client Txs: max_txs=", runner.maxTxs, " max_concurrent=", runner.maxConcurrent, " txs/client: ", runner.totalTxsPerClient)
-
-	if !streamOn(ctx, runner.watchClientTxSubmissions(ctx, t, 2*time.Second)) {
-		return
-	}
+	streamOn(ctx, runner.watchClientTxSubmissions(ctx, t, 2*time.Second))
 
 	runner.reportNodeStatuses(ctx, t, clients)
 }
 
-func streamOn[T any](ctx context.Context, stream <-chan T) bool {
-	select {
-	case <-ctx.Done():
-		return false
-	case <-stream:
-		return true
+func Test_TM_Deploys(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Hour)
+	defer cancel()
+
+	addrs := []string{
+		"34.135.76.248",
+		"34.122.228.107",
+		"34.135.1.98",
+		"35.184.103.23",
 	}
+	t.Log("addresses: ", addrs)
+
+	var clients []*narwhalmint.TMClient
+	for _, addr := range addrs {
+		httpc, err := tmhttp.NewWithTimeout("tcp://"+addr+":26657", "/websockets", 15)
+		require.NoError(t, err)
+		clients = append(clients, &narwhalmint.TMClient{
+			NodeName: addr,
+			HTTP:     httpc,
+		})
+	}
+
+	runner := newTMClientRunner(clients, 10000, 1)
+	defer func() {
+		runner.printRunStats(t)
+	}()
+
+	t.Log(nowTS(), "submitting client Txs: max_txs=", runner.maxTxs, " max_concurrent=", runner.maxConcurrent, " txs/client: ", runner.totalTxsPerClient)
+	streamOn(ctx, runner.watchClientTxSubmissions(ctx, t, 2*time.Second))
+
+	runner.reportNodeStatuses(ctx, t, clients)
 }
 
 type narwhalTMOpts struct {
@@ -132,6 +154,15 @@ type narwhalTMOpts struct {
 	RunTMInProcess bool
 	Start          time.Time
 	StartFrom      string
+}
+
+func streamOn[T any](ctx context.Context, stream <-chan T) bool {
+	select {
+	case <-ctx.Done():
+		return false
+	case <-stream:
+		return true
+	}
 }
 
 func startDefaultNarwhalTMNodes(ctx context.Context, tb testing.TB, opts narwhalTMOpts) (*narwhalmint.LauncherNarwhal, *narwhalmint.LauncherTendermint) {

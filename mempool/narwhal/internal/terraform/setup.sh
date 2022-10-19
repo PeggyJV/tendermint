@@ -16,6 +16,7 @@ echo $INSTANCES_JSON | \
     rm -rf $TMP
 
 for ip in $(echo $INSTANCES_JSON | jq -r '.[].external_ip'); do
-	echo "starting $ip TM and narwhal nodes..."
+	echo "
+starting $ip TM and narwhal nodes..."
 	ssh -q -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "jwberged@$ip" "sudo bash /usr/local/lib/start.sh $ZIP_FILE"
 done

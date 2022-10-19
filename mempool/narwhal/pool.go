@@ -56,13 +56,7 @@ func New(ctx context.Context, cfg *config.NarwhalMempoolConfig, opts ...PoolOpti
 		workersC = append(workersC, workerC)
 	}
 
-	primaryC, err := narwhalc.NewPrimaryClient(ctx, cfg.PrimaryEncodedPublicKey, cfg.PrimaryAddr)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create narwhal primary node client: %w", err)
-	}
-
 	p := Pool{
-		primaryC:       primaryC,
 		workersC:       workersC,
 		logger:         log.NewNopLogger(),
 		precheckFn:     func(tx types.Tx) error { return nil },
@@ -72,6 +66,17 @@ func New(ctx context.Context, cfg *config.NarwhalMempoolConfig, opts ...PoolOpti
 	for _, o := range opts {
 		o(&p)
 	}
+
+	primaryC, err := narwhalc.NewPrimaryClient(
+		ctx,
+		p.logger.With("client", "narwhal_primary"),
+		cfg.PrimaryEncodedPublicKey,
+		cfg.PrimaryAddr,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create narwhal primary node client: %w", err)
+	}
+	p.primaryC = primaryC
 
 	return &p, nil
 }

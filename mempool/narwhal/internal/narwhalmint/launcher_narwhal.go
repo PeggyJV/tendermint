@@ -22,13 +22,15 @@ import (
 
 // LauncherNarwhal is can set up and run a narwhal cluster.
 type LauncherNarwhal struct {
-	BatchSize  int // will default to 5000
-	HeaderSize int // will default to 500
-	Host       string
-	Out        io.Writer
-	OutputDir  string
-	Primaries  int // will default to 4 when not set
-	Workers    int // will default to 1 when not set
+	BatchSize   int           // will default to 5000
+	BatchDelay  time.Duration // defaults to 200ms
+	HeaderSize  int           // will default to 500
+	HeaderDelay time.Duration // defaults to 500ms
+	Host        string
+	Out         io.Writer
+	OutputDir   string
+	Primaries   int // will default to 4 when not set
+	Workers     int // will default to 1 when not set
 
 	dirs                testDirs
 	committeeCFG        committeePrimariesCFG
@@ -119,8 +121,14 @@ func (l *LauncherNarwhal) SetupFS(ctx context.Context, now time.Time, opts ...Na
 	if l.BatchSize == 0 {
 		l.BatchSize = 5000
 	}
+	if l.BatchDelay == 0 {
+		l.BatchDelay = 200 * time.Millisecond
+	}
 	if l.HeaderSize == 0 {
 		l.HeaderSize = 500
+	}
+	if l.HeaderDelay == 0 {
+		l.HeaderDelay = 500 * time.Millisecond
 	}
 	if l.Primaries == 0 && len(opts) == 0 {
 		l.Primaries = 4
@@ -333,7 +341,7 @@ func (l *LauncherNarwhal) setupTestEnv(ctx context.Context, now time.Time, opts 
 func (l *LauncherNarwhal) writeParameterFiles() error {
 	for nodeName, auth := range l.committeeCFG.Authorities {
 		paramFile := l.dirs.nodeParameterFile(nodeName)
-		err := writeParametersFile(paramFile, string(auth.GRPC), l.BatchSize, l.HeaderSize)
+		err := writeParametersFile(paramFile, string(auth.GRPC), l.BatchSize, l.HeaderSize, l.BatchDelay, l.HeaderDelay)
 		if err != nil {
 			return fmt.Errorf("failed to write parameters file(%s): %w", paramFile, err)
 		}
@@ -658,7 +666,7 @@ func newWorkerCFG(portFact *portFactory, host string, opt NarwhalWorkerOpt, netw
 	return cfg, nil
 }
 
-func writeParametersFile(filename, grpcAddr string, batchSize, headerSize int) error {
+func writeParametersFile(filename, grpcAddr string, batchSize, headerSize int, batchDelay, headerDelay time.Duration) error {
 	// contents pulled from mystenlabs/narwhal demo
 	tmpl := `
 {
@@ -676,9 +684,9 @@ func writeParametersFile(filename, grpcAddr string, batchSize, headerSize int) e
     },
     "gc_depth": 50,
     "header_size": %d,
-    "max_batch_delay": "200ms",
+    "max_batch_delay": "%s",
     "max_concurrent_requests": 500000,
-    "max_header_delay": "500ms",
+    "max_header_delay": "%s",
 	"network_admin_server": {
 		"primary_network_admin_server_port": 0,
 		"worker_network_admin_server_base_port": 0
@@ -689,7 +697,7 @@ func writeParametersFile(filename, grpcAddr string, batchSize, headerSize int) e
     "sync_retry_delay": "10_000ms",
     "sync_retry_nodes": 3
 }`
-	contents := fmt.Sprintf(tmpl, batchSize, grpcAddr, headerSize)
+	contents := fmt.Sprintf(tmpl, batchSize, grpcAddr, headerSize, batchDelay, headerDelay)
 	return os.WriteFile(filename, []byte(contents), os.ModePerm)
 }
 
@@ -746,18 +754,6 @@ func readCommitteeFiles(dirs testDirs) (committeePrimariesCFG, error) {
 	err := readJSONFile(dirs.committeePrimaryFile(), &primCFGs)
 	if err != nil {
 		return committeePrimariesCFG{}, fmt.Errorf("failed to read primary committe file: %w", err)
-	}
-
-	var workerCFGs committeeWorkersCFG
-	err = readJSONFile(dirs.committeeWorkerFile(), &workerCFGs)
-	if err != nil {
-		return committeePrimariesCFG{}, fmt.Errorf("failed to read worker committe file: %w", err)
-	}
-
-	for name := range workerCFGs.Workers {
-		cfg := primCFGs.Authorities[name]
-		cfg.Workers = workerCFGs.Workers[name]
-		primCFGs.Authorities[name] = cfg
 	}
 
 	return primCFGs, nil
