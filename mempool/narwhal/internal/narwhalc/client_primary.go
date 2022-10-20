@@ -65,7 +65,7 @@ func (p *PrimaryClient) DAGCollectionTXs(ctx context.Context, colls types.DAGCol
 
 	queryable := append(causalColls, mapSlice(colls.ExtraCollections, hexBytesToProtoCert)...)
 
-	txs, err := p.certTXs(ctx, queryable...)
+	txs, err := p.certTxs(ctx, queryable...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to obtain TXs for colls: %w", err)
 	}
@@ -73,10 +73,10 @@ func (p *PrimaryClient) DAGCollectionTXs(ctx context.Context, colls types.DAGCol
 	return txs, nil
 }
 
-// certTXs returns the transactions associated to the given collections.
-func (p *PrimaryClient) certTXs(ctx context.Context, collDigests ...*narwhalproto.CertificateDigest) (types.Txs, error) {
-	pairs := []any{"num_colls", len(collDigests)}
-	logFn := logDurs(ctx, p.logger, "certTXs")
+// certTxs returns the transactions associated to the given collections.
+func (p *PrimaryClient) certTxs(ctx context.Context, collDigests ...*narwhalproto.CertificateDigest) (types.Txs, error) {
+	pairs := []any{"num_input_coll_digests", len(collDigests)}
+	logFn := logDurs(ctx, p.logger, "certTxs")
 	defer func() { logFn(pairs...) }()
 
 	if len(collDigests) == 0 {

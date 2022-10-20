@@ -27,19 +27,26 @@ func newCMD() *cobra.Command {
 }
 
 type builder struct {
-	outputDir   string
-	batchSize   int
-	batchDelay  time.Duration
-	headerSize  int
-	headerDelay time.Duration
-	host        string
-	logLevel    string
-	p2pPort     string
-	primaries   int
-	proxyApp    string
-	reapDur     time.Duration
-	rpcPort     string
-	workers     int
+	outputDir      string
+	batchSize      int
+	batchDelay     time.Duration
+	checkDur       time.Duration
+	followDur      time.Duration
+	headerSize     int
+	headerDelay    time.Duration
+	host           string
+	json           bool
+	logFmt         string
+	logLevel       string
+	maxConcurrency int
+	maxTxs         int
+	p2pPort        string
+	primaries      int
+	proxyApp       string
+	reapDur        time.Duration
+	rpcPort        string
+	follow         bool
+	workers        int
 }
 
 func (b *builder) cmd() *cobra.Command {
@@ -58,6 +65,8 @@ func (b *builder) cmd() *cobra.Command {
 	cmd.AddCommand(
 		completionCmd(cliName),
 		b.cmdConfigGen(),
+		b.cmdLoad(),
+		b.cmdStats(),
 	)
 
 	return &cmd
@@ -217,6 +226,7 @@ func (b *builder) newLaunchers(out io.Writer) (*narwhalmint.LauncherTendermint, 
 	ltm := narwhalmint.LauncherTendermint{
 		Host:         b.host,
 		LogLevel:     b.logLevel,
+		LogFmt:       b.logFmt,
 		OutputDir:    b.outputDir,
 		ProxyAppType: b.proxyApp,
 		ReapDuration: b.reapDur,
@@ -265,6 +275,7 @@ func (b *builder) registerTMFlags(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&b.proxyApp, "proxy-app", "persistent_kvstore", "TM proxy app")
 	cmd.Flags().StringVar(&b.logLevel, "log-level", "", "log level for TM nodes; defaults to info")
 	cmd.Flags().DurationVar(&b.reapDur, "max-reap-duration", 15*time.Second, "maximum time to wait for reaping the next block to complete")
+	cmd.Flags().StringVar(&b.logFmt, "log-format", "plain", "format of tendermint logs; either json or plain; defaults to plain")
 }
 
 func configsExists(root string) bool {

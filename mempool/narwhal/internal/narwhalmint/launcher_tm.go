@@ -39,6 +39,7 @@ type TMClient struct {
 
 type LauncherTendermint struct {
 	Host                  string
+	LogFmt                string
 	LogLevel              string
 	Out                   io.Writer
 	OutputDir             string
@@ -408,6 +409,8 @@ func (l *LauncherTendermint) setupTMFS(cfg *config.Config, now time.Time, opts [
 		if opt.ReapDuration > 0 {
 			waitDur = opt.ReapDuration
 		}
+		cfg.LogFormat = l.LogFmt
+		cfg.LogLevel = l.LogLevel
 		cfg.Mempool.ReapWaitDur = waitDur
 		cfg.Narwhal = narwhalCFG
 		cfg.RPC.ListenAddress = newListenAddr(l.Host, node.rpc)
@@ -431,6 +434,12 @@ func (l *LauncherTendermint) setDefaults() {
 	}
 	if l.ProxyAppType == "" {
 		l.ProxyAppType = "noop"
+	}
+	if l.LogFmt != config.LogFormatJSON {
+		l.LogFmt = config.LogFormatPlain
+	}
+	if strings.TrimSpace(l.LogLevel) == "" {
+		l.LogLevel = config.DefaultLogLevel
 	}
 }
 

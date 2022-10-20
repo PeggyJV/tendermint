@@ -5,7 +5,7 @@ function start_tendermint() {
 
 	local IP="$(hostname -i)"
 	local TMHOME="/usr/local/lib/tendermint/nodes/$IP"
-	local TMLOGFILE="$TMHOME/logs/log"
+	local TMLOGFILE="$TMHOME/logs/log.jsonl"
   touch $TMLOGFILE
 
   #  ___                ___
@@ -33,7 +33,7 @@ function start_narwhal_primary() {
 	# ( ) Narwhal ( )
 	#  (/ Primary \)
 	#   (.·´¯`·.¸¸)
-	LOG_LVL="-vvv" start_narwhal_node --store "$NARNODE/dbs/primary" primary --consensus-disabled >> $NAR_PRIM_LOGFILE 2>&1 &
+	LOG_LVL="-vv" start_narwhal_node --store "$NARNODE/dbs/primary" primary --consensus-disabled >> $NAR_PRIM_LOGFILE 2>&1 &
   echo "narwhal primary node running... logfile at $NAR_PRIM_LOGFILE"
 }
 

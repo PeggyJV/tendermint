@@ -9,7 +9,7 @@ export TMP=$(mktemp -d)
 export ZIP_FILE="$GROUP_NAME.zip"
 
 echo $INSTANCES_JSON | \
-    narwhalmint config-gen --output "$TMP" && \
+    narwhalmint config-gen --output "$TMP" --log-format "json" --log-level "debug" && \
     cd $TMP && \
     zip -q -r "$ZIP_FILE" ./* && \
     gsutil cp "$ZIP_FILE"  "gs://narwhalmint/$ZIP_FILE" && \

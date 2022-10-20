@@ -23,6 +23,7 @@ docs/.vuepress/dist
 abci-cli
 docs/node_modules/
 index.html.md
+mempool/narwhal/internal/demo
 mempool/narwhal/internal/terraform/narwhal-cosmos-6fb9ac2ac84a.json
 mempool/narwhal/internal/narwhalmint/test_results
 mempool/narwhal/internal/docker_run/compose.logs

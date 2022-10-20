@@ -48,10 +48,15 @@ func (m *middlewareStats) GlobalCheck(tx types.Tx, res *abci.ResponseCheckTx) (O
 	return m.next.GlobalCheck(tx, res)
 }
 
-func (m *middlewareStats) HydrateBlockData(ctx context.Context, bl *types.Block) (types.Data, error) {
+func (m *middlewareStats) HydrateBlockData(ctx context.Context, block *types.Block) (types.Data, error) {
 	ctx = withObservations(ctx)
-	defer m.observeOp(ctx, "HydrateBlockData")
-	return m.next.HydrateBlockData(ctx, bl)
+	defer m.observeOp(ctx, "HydrateBlockData",
+		"block_size", block.Size(),
+		"height", block.Height,
+		"num_colls", block.Collections.Count(),
+		"num_txs", len(block.Txs),
+	)
+	return m.next.HydrateBlockData(ctx, block)
 }
 
 func (m *middlewareStats) Meta() PoolMeta {
@@ -60,13 +65,23 @@ func (m *middlewareStats) Meta() PoolMeta {
 
 func (m *middlewareStats) OnBlockFinality(ctx context.Context, block *types.Block, newPreFn PreCheckFunc, newPostFn PostCheckFunc) (OpResult, error) {
 	ctx = withObservations(ctx)
-	defer m.observeOp(ctx, "OnBlockFinality")
+	defer m.observeOp(ctx, "OnBlockFinality",
+		"block_size", block.Size(),
+		"height", block.Height,
+		"num_colls", block.Collections.Count(),
+		"num_txs", len(block.Txs),
+	)
 	return m.next.OnBlockFinality(ctx, block, newPreFn, newPostFn)
 }
 
 func (m *middlewareStats) Reap(ctx context.Context, opts ReapOption) (ReapResults, error) {
 	ctx = withObservations(ctx)
-	defer m.observeOp(ctx, "Reap")
+	defer m.observeOp(ctx, "Reap",
+		"max_txs", opts.NumTxs,
+		"max_size", opts.BlockSizeLimit,
+		"max_gas", opts.GasLimit,
+		"verified", opts.Verify,
+	)
 	return m.next.Reap(ctx, opts)
 }
 
@@ -78,16 +93,20 @@ func (m *middlewareStats) Recheck(ctx context.Context, appConn proxy.AppConnMemp
 
 func (m *middlewareStats) Remove(ctx context.Context, opts RemOption) (OpResult, error) {
 	ctx = withObservations(ctx)
-	defer m.observeOp(ctx, "Remove")
+	defer m.observeOp(ctx, "Remove",
+		"num_collections", opts.Collections.Count(),
+		"num_tx_keys", len(opts.TxKeys),
+	)
 	return m.next.Remove(ctx, opts)
 }
 
-func (m *middlewareStats) observeOp(ctx context.Context, op string) {
-	m.logger.Debug("observed "+op,
+func (m *middlewareStats) observeOp(ctx context.Context, op string, kvPairs ...any) {
+	kvPairs = append(kvPairs,
 		"op", op,
 		"took", observe.Since(ctx).String(),
 		"trace_id", observe.TraceID(ctx),
 	)
+	m.logger.Debug("observed "+op, kvPairs...)
 }
 
 func withObservations(ctx context.Context) context.Context {
