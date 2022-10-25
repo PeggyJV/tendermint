@@ -412,7 +412,7 @@ func newNarwhalMempoolABCI(ctx context.Context, logger log.Logger, appConn proxy
 		logger.With("component", "abci"),
 		config.Mempool,
 		appConn,
-		pool,
+		mempl.ObservePool(nLogger)(pool),
 	), nil
 }
 
@@ -423,14 +423,17 @@ func newClistMempoolABCI(
 	config *cfg.Config,
 	memplMetrics *mempl.Metrics,
 ) (*mempl.ABCI, *mempl.Reactor, wal) {
-	pool := mempl.NewPoolCList(
+	clistPool := mempl.NewPoolCList(
 		config.Mempool,
 		state.LastBlockHeight,
 		mempl.WithMetrics(memplMetrics),
 		mempl.WithPreCheck(sm.TxPreCheck(state)),
 		mempl.WithPostCheck(sm.TxPostCheck(state)),
 	)
-	pool.SetLogger(logger.With("component", "pool_clist"))
+	clistLogger := logger.With("component", "pool_clist")
+	clistPool.SetLogger(clistLogger)
+
+	pool := mempl.ObservePool(clistLogger)(clistPool)
 
 	mpABCI := mempl.NewABCI(
 		logger.With("component", "abci"),
@@ -438,10 +441,10 @@ func newClistMempoolABCI(
 		appConn,
 		pool,
 	)
-	reactor := mempl.NewReactor(config.Mempool, mpABCI, pool)
+	reactor := mempl.NewReactor(config.Mempool, mpABCI, clistPool)
 	reactor.SetLogger(logger.With("component", "reactor"))
 
-	return mpABCI, reactor, pool
+	return mpABCI, reactor, clistPool
 }
 
 func createEvidenceReactor(config *cfg.Config, dbProvider DBProvider,

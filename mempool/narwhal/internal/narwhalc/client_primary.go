@@ -9,10 +9,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tendermint/tendermint/crypto"
 	"github.com/tendermint/tendermint/libs/log"
 	"github.com/tendermint/tendermint/mempool"
 	"github.com/tendermint/tendermint/mempool/narwhal/internal/narwhalproto"
+	"github.com/tendermint/tendermint/observe"
 	"github.com/tendermint/tendermint/types"
 )
 
@@ -56,7 +56,7 @@ func NewPrimaryClient(ctx context.Context, logger log.Logger, nodeEncodedPK, add
 }
 
 func (p *PrimaryClient) DAGCollectionTXs(ctx context.Context, colls types.DAGCollections) (types.Txs, error) {
-	ctx = withTraceID(ctx)
+	ctx = observe.WithTraceID(ctx)
 
 	causalColls, err := p.certsFrom(ctx, hexBytesToProtoCert(colls.RootCollection))
 	if err != nil {
@@ -109,7 +109,7 @@ func (p *PrimaryClient) certTXs(ctx context.Context, collDigests ...*narwhalprot
 }
 
 func (p *PrimaryClient) RemoveDAGCollections(ctx context.Context, colls types.DAGCollections) error {
-	ctx = withTraceID(ctx)
+	ctx = observe.WithTraceID(ctx)
 	defer logDurs(ctx, p.logger, "RemoveDAGCollections")("num_colls", colls.Count())
 
 	allColls, err := p.dagCollectionProtoCerts(ctx, colls)
@@ -161,7 +161,7 @@ func (p *PrimaryClient) removeCollections(ctx context.Context, collDigests ...*n
 // also returning the additional collection IDs that can be added to the block from later rounds that may be sibling
 // and/or not included from the BFS from the starting collection ID via ReadCausal.
 func (p *PrimaryClient) NextBlockCerts(ctx context.Context, opts mempool.ReapOption) (*types.DAGCollections, error) {
-	ctx = withTraceID(ctx)
+	ctx = observe.WithTraceID(ctx)
 	defer logDurs(ctx, p.logger, "NextBlockCerts")()
 
 	causalCollection, collections, err := nextBlockCollections(ctx, nextBlockIn{
@@ -489,21 +489,8 @@ func logDurs(ctx context.Context, logger log.Logger, op string) func(pairs ...an
 }
 
 func logInfo(ctx context.Context, logger log.Logger, op string, pairs ...any) {
-	id := getTraceID(ctx)
-	logger.Info(op+" completed", append(pairs, "trace_id", id)...)
-}
-
-const traceIDKey = "trace-id"
-
-func withTraceID(ctx context.Context) context.Context {
-	b := crypto.CRandBytes(24)
-	id := base64.StdEncoding.EncodeToString(b)
-	return context.WithValue(ctx, traceIDKey, id)
-}
-
-func getTraceID(ctx context.Context) string {
-	s, _ := ctx.Value(traceIDKey).(string)
-	return s
+	pairs = append(pairs, "trace_id", observe.TraceID(ctx))
+	logger.Info(op+" completed", pairs...)
 }
 
 func takeTxsFromCollectionsResult(resp *narwhalproto.GetCollectionsResponse) ([]*narwhalproto.Transaction, error) {

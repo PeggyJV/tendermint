@@ -12,6 +12,7 @@ import (
 	"github.com/tendermint/tendermint/libs/log"
 	"github.com/tendermint/tendermint/mempool"
 	"github.com/tendermint/tendermint/mempool/narwhal/internal/narwhalc"
+	"github.com/tendermint/tendermint/observe"
 	"github.com/tendermint/tendermint/proxy"
 	"github.com/tendermint/tendermint/types"
 )
@@ -82,9 +83,9 @@ func New(ctx context.Context, cfg *config.NarwhalMempoolConfig, opts ...PoolOpti
 }
 
 func (p *Pool) CheckTxCallback(ctx context.Context, tx types.Tx, res *abci.ResponseCheckTx, txInfo mempool.TxInfo) mempool.OpResult {
-	start := time.Now()
+	ctx = withObservations(ctx)
 	defer func() {
-		p.logger.Debug("submit tx to narwhal", "took", time.Since(start).String())
+		p.logger.Debug("submit tx to narwhal", "took", observe.Since(ctx).String())
 	}()
 
 	workerC := p.workerSelectFn()
@@ -213,6 +214,11 @@ func (p *Pool) txsFromColls(ctx context.Context, coll *types.DAGCollections) (tx
 		return nil, err
 	}
 	return txs, nil
+}
+
+func withObservations(ctx context.Context) context.Context {
+	ctx = observe.WithTraceID(ctx)
+	return observe.WithStartTime(ctx)
 }
 
 // newRoundRobinWorkerSelectFn is safe for concurrent access.
