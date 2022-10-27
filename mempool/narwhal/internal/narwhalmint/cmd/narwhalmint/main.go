@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -31,6 +32,7 @@ type builder struct {
 	batchSize      int
 	batchDelay     time.Duration
 	checkDur       time.Duration
+	follow         bool
 	followDur      time.Duration
 	headerSize     int
 	headerDelay    time.Duration
@@ -40,12 +42,13 @@ type builder struct {
 	logLevel       string
 	maxConcurrency int
 	maxTxs         int
+	metricsPort    int
 	p2pPort        string
 	primaries      int
 	proxyApp       string
 	reapDur        time.Duration
 	rpcPort        string
-	follow         bool
+	testnetID      string
 	workers        int
 }
 
@@ -67,6 +70,7 @@ func (b *builder) cmd() *cobra.Command {
 		b.cmdConfigGen(),
 		b.cmdLoad(),
 		b.cmdStats(),
+		b.cmdTelegrafConfig(),
 	)
 
 	return &cmd
@@ -232,6 +236,9 @@ func (b *builder) newLaunchers(out io.Writer) (*narwhalmint.LauncherTendermint, 
 		ReapDuration: b.reapDur,
 		Out:          out,
 	}
+	if b.metricsPort >= 0 {
+		ltm.MetricsPort = fmt.Sprintf(":%d", b.metricsPort)
+	}
 
 	return &ltm, &lnarwhal
 }
@@ -272,10 +279,15 @@ func (b *builder) registerOutputFlag(cmd *cobra.Command) {
 }
 
 func (b *builder) registerTMFlags(cmd *cobra.Command) {
+	b.registerTMMetricsPort(cmd)
 	cmd.Flags().StringVar(&b.proxyApp, "proxy-app", "persistent_kvstore", "TM proxy app")
 	cmd.Flags().StringVar(&b.logLevel, "log-level", "", "log level for TM nodes; defaults to info")
 	cmd.Flags().DurationVar(&b.reapDur, "max-reap-duration", 15*time.Second, "maximum time to wait for reaping the next block to complete")
 	cmd.Flags().StringVar(&b.logFmt, "log-format", "plain", "format of tendermint logs; either json or plain; defaults to plain")
+}
+
+func (b *builder) registerTMMetricsPort(cmd *cobra.Command) {
+	cmd.Flags().IntVar(&b.metricsPort, "metrics-port", -1, "port prom metrics can be scraped")
 }
 
 func configsExists(root string) bool {

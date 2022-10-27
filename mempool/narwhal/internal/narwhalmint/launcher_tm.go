@@ -41,6 +41,7 @@ type LauncherTendermint struct {
 	Host                  string
 	LogFmt                string
 	LogLevel              string
+	MetricsPort           string
 	Out                   io.Writer
 	OutputDir             string
 	ProxyAppType          string
@@ -408,6 +409,10 @@ func (l *LauncherTendermint) setupTMFS(cfg *config.Config, now time.Time, opts [
 		waitDur := l.ReapDuration
 		if opt.ReapDuration > 0 {
 			waitDur = opt.ReapDuration
+		}
+		if l.MetricsPort != "" {
+			cfg.Instrumentation.Prometheus = true
+			cfg.Instrumentation.PrometheusListenAddr = l.MetricsPort
 		}
 		cfg.LogFormat = l.LogFmt
 		cfg.LogLevel = l.LogLevel

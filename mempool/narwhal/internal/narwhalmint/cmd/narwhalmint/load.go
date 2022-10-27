@@ -372,17 +372,10 @@ func (c *clientStats) totalErrs() int {
 }
 
 func getClientsFromStdIn(r io.Reader) ([]*narwhalmint.TMClient, error) {
-	bb, err := io.ReadAll(r)
+	ipAddrs, err := getIPsFromStdIn(r)
 	if err != nil {
 		return nil, err
 	}
-
-	var ipAddrs []string
-	err = json.Unmarshal(bb, &ipAddrs)
-	if err != nil {
-		return nil, err
-	}
-	sort.Strings(ipAddrs)
 
 	var clients []*narwhalmint.TMClient
 	for _, ip := range ipAddrs {
@@ -397,4 +390,20 @@ func getClientsFromStdIn(r io.Reader) ([]*narwhalmint.TMClient, error) {
 	}
 
 	return clients, nil
+}
+
+func getIPsFromStdIn(r io.Reader) ([]string, error) {
+	bb, err := io.ReadAll(r)
+	if err != nil {
+		return nil, err
+	}
+
+	var ipAddrs []string
+	err = json.Unmarshal(bb, &ipAddrs)
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(ipAddrs)
+
+	return ipAddrs, nil
 }
