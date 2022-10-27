@@ -192,9 +192,10 @@ type nextBlockIn struct {
 
 func nextBlockCollections(ctx context.Context, in nextBlockIn) (causalCollection *narwhalproto.CertificateDigest, collections []*narwhalproto.CertificateDigest, _ error) {
 	prep := &blockPrep{
-		blockGasLimit: in.opts.BlockSizeLimit,
-		blockTXsLimit: int64(in.opts.NumTxs),
-		logger:        in.logger,
+		blockGasLimit:  in.opts.BlockSizeLimit,
+		blockTXsLimit:  int64(in.opts.NumTxs),
+		blockCollLimit: 30,
+		logger:         in.logger,
 		publicKey: narwhalproto.PublicKey{
 			Bytes: in.publicKey,
 		},
@@ -209,6 +210,7 @@ type blockPrep struct {
 	blockSizeBytesLimit int64
 	blockGasLimit       int64
 	blockTXsLimit       int64
+	blockCollLimit      int64
 	logger              log.Logger
 	publicKey           narwhalproto.PublicKey
 
@@ -291,7 +293,7 @@ func (b *blockPrep) nextRelevantRound(ctx context.Context, currentRound, mostRec
 	lastCompletedRound, extraCollections, totalTxs, err := b.traverseRounds(
 		ctx,
 		currentRound, mostRecentRound,
-		0, 0, 0,
+		0, 0, 0, 0,
 		nil,
 	)
 	if err != nil {
@@ -303,24 +305,24 @@ func (b *blockPrep) nextRelevantRound(ctx context.Context, currentRound, mostRec
 		"total_txs", totalTxs,
 	)
 
-	if totalTxs == 0 {
-		return 0, nil, fmt.Errorf("no txs associated with available DAG rounds")
-	}
+	//if totalTxs == 0 {
+	//	return 0, nil, fmt.Errorf("no txs associated with available DAG rounds")
+	//}
 	return lastCompletedRound, extraCollections, nil
 }
 
 func (b *blockPrep) traverseRounds(
 	ctx context.Context,
 	currentRound, mostRecentRound uint64,
-	proposedBlockSize, proposedBlockGasCost, proposedBlockNumTXs int64,
+	propSize, propGasCost, propNumTXs, propNumColls int64,
 	collections []*narwhalproto.CertificateDigest,
 ) (lastCompletedRound uint64, extraCollections []*narwhalproto.CertificateDigest, totalTxs int64, _ error) {
 	pairs := []any{
 		"current_round", currentRound,
 		"most_recent_round", mostRecentRound,
-		"proposed_block_size", proposedBlockSize,
-		"proposed_block_gas_cost", proposedBlockGasCost,
-		"proposed_block_num_txs", proposedBlockNumTXs,
+		"proposed_block_size_bytes", propSize,
+		"proposed_block_gas_cost", propGasCost,
+		"proposed_block_num_txs", propNumTXs,
 		"num_colls", len(collections),
 	}
 	logFn := logDurs(ctx, b.logger, "traverseRounds")
@@ -329,7 +331,7 @@ func (b *blockPrep) traverseRounds(
 	readCausalResp, err := b.nodeReadCausal(ctx, currentRound)
 	if err != nil {
 		if strings.Contains(err.Error(), "No known certificates for this authority") {
-			return currentRound - 1, collections, proposedBlockNumTXs, nil
+			return currentRound - 1, collections, propNumTXs, nil
 		}
 		return 0, nil, 0, fmt.Errorf("failed node read cause for current round %d (most recent rount %d): %w", currentRound, mostRecentRound, err)
 	}
@@ -338,24 +340,26 @@ func (b *blockPrep) traverseRounds(
 
 	var newColls []*narwhalproto.CertificateDigest
 	for _, collection := range colls {
-		txs, err := b.getCollectionTxs(ctx, collection)
-		if err != nil {
-			return 0, nil, 0, fmt.Errorf("failed to get collection txs: %w", err)
-		}
-		if len(txs) == 0 {
-			continue
-		}
-
-		stats, err := b.getTxsStats(ctx, txs)
-		if err != nil {
-			return 0, nil, 0, fmt.Errorf("failed to get txs stats: %w", err)
-		}
-		proposedBlockSize += stats.sizeBytes
-		proposedBlockGasCost += stats.gasWanted
-		proposedBlockNumTXs += stats.numTXs
-		if b.blockSizeExceed(proposedBlockSize) ||
-			b.gasExceeded(proposedBlockGasCost) ||
-			b.numTXsExceeded(proposedBlockNumTXs) {
+		//txs, err := b.getCollectionTxs(ctx, collection)
+		//if err != nil {
+		//	return 0, nil, 0, fmt.Errorf("failed to get collection txs: %w", err)
+		//}
+		//if len(txs) == 0 {
+		//	continue
+		//}
+		//
+		//stats, err := b.getTxsStats(ctx, txs)
+		//if err != nil {
+		//	return 0, nil, 0, fmt.Errorf("failed to get txs stats: %w", err)
+		//}
+		//propSize += stats.sizeBytes
+		//propGasCost += stats.gasWanted
+		//propNumTXs += stats.numTXs
+		propNumColls++
+		if b.blockSizeExceed(propSize) ||
+			b.gasExceeded(propGasCost) ||
+			b.numTXsExceeded(propNumTXs) ||
+			b.numCollsExceded(propNumColls) {
 			break
 		}
 
@@ -368,16 +372,16 @@ func (b *blockPrep) traverseRounds(
 	// round before and add the extra collections from the current round that will
 	// fit within the gas limit.
 	case len(newColls)+duplicatesRemoved < len(readCausalResp.CollectionIds):
-		return currentRound - 1, newColls, proposedBlockNumTXs, nil
+		return currentRound - 1, newColls, propNumTXs, nil
 		// if we are one round ahead of the newest round, then we take the extra collections again
 		// and set the lastCompletedRound to most recent round. This allows us to take nodes in the DAG
 		// that are at the same height as the newest round (the new colls).
 	case currentRound == mostRecentRound+1:
-		return mostRecentRound, newColls, proposedBlockNumTXs, nil
+		return mostRecentRound, newColls, propNumTXs, nil
 	}
 
 	// recurse further until we run out of rounds or exceed the gas threshold
-	return b.traverseRounds(ctx, currentRound+1, mostRecentRound, proposedBlockSize, proposedBlockGasCost, proposedBlockNumTXs, newColls)
+	return b.traverseRounds(ctx, currentRound+1, mostRecentRound, propSize, propGasCost, propNumTXs, propNumColls, newColls)
 }
 
 func (b *blockPrep) getTxsStats(ctx context.Context, txs []*narwhalproto.Transaction) (out struct{ numTXs, sizeBytes, gasWanted int64 }, _ error) {
@@ -417,6 +421,10 @@ func (b *blockPrep) gasExceeded(proposedGas int64) bool {
 
 func (b *blockPrep) numTXsExceeded(proposedNumTXs int64) bool {
 	return limitExceeded(b.blockTXsLimit, proposedNumTXs)
+}
+
+func (b *blockPrep) numCollsExceded(proposedNumColls int64) bool {
+	return limitExceeded(b.blockCollLimit, proposedNumColls)
 }
 
 func (b *blockPrep) getCollectionTxs(ctx context.Context, collections ...*narwhalproto.CertificateDigest) ([]*narwhalproto.Transaction, error) {

@@ -159,6 +159,19 @@ func (p *Pool) Reap(ctx context.Context, opts mempool.ReapOption) (mempool.ReapR
 		return mempool.ReapResults{}, err
 	}
 
+	if len(txs) == 0 {
+		var extraCerts []string
+		for _, extra := range collections.ExtraCollections {
+			extraCerts = append(extraCerts, extra.String())
+		}
+		p.logger.Error("no txs in collections",
+			"num_colls", collections.Count(),
+			"root_coll", collections.RootCollection.String(),
+			"extra_colls", extraCerts,
+		)
+		return mempool.ReapResults{}, fmt.Errorf("no txs associated with available DAG rounds")
+	}
+
 	return mempool.ReapResults{
 		Collections: collections,
 		Txs:         txs,
