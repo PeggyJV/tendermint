@@ -32,6 +32,13 @@ func WithPreCheckFunc(fn mempool.PreCheckFunc) PoolOption {
 	}
 }
 
+func WithMetricsDetails(namespace string, labelsAndVals ...string) PoolOption {
+	return func(pool *Pool) {
+		pool.namespace = namespace
+		pool.labelsAndVals = labelsAndVals
+	}
+}
+
 type Pool struct {
 	// narwhal clients
 	primaryC              *narwhalc.PrimaryClient
@@ -40,6 +47,8 @@ type Pool struct {
 
 	// dependencies
 	logger         log.Logger
+	namespace      string
+	labelsAndVals  []string
 	precheckFn     mempool.PreCheckFunc
 	postcheckFn    mempool.PostCheckFunc
 	workerSelectFn func() *narwhalc.WorkerClient
@@ -48,31 +57,33 @@ type Pool struct {
 var _ mempool.Pool = (*Pool)(nil)
 
 func New(ctx context.Context, cfg *config.NarwhalMempoolConfig, opts ...PoolOption) (*Pool, error) {
+	p := Pool{
+		logger:      log.NewNopLogger(),
+		precheckFn:  func(tx types.Tx) error { return nil },
+		postcheckFn: func(tx types.Tx, resp *abci.ResponseCheckTx) error { return nil },
+	}
+	for _, o := range opts {
+		o(&p)
+	}
+
 	var workersC []*narwhalc.WorkerClient
 	for _, wCFG := range cfg.Workers {
-		workerC, err := narwhalc.NewWorkerClient(ctx, wCFG.Addr, wCFG.Name)
+		workerC, err := narwhalc.NewWorkerClient(ctx, wCFG.Addr, wCFG.Name, p.namespace, p.labelsAndVals...)
 		if err != nil {
 			return nil, err
 		}
 		workersC = append(workersC, workerC)
 	}
-
-	p := Pool{
-		workersC:       workersC,
-		logger:         log.NewNopLogger(),
-		precheckFn:     func(tx types.Tx) error { return nil },
-		postcheckFn:    func(tx types.Tx, resp *abci.ResponseCheckTx) error { return nil },
-		workerSelectFn: newRoundRobinWorkerSelectFn(workersC),
-	}
-	for _, o := range opts {
-		o(&p)
-	}
+	p.workersC = workersC
+	p.workerSelectFn = newRoundRobinWorkerSelectFn(workersC)
 
 	primaryC, err := narwhalc.NewPrimaryClient(
 		ctx,
 		p.logger.With("client", "narwhal_primary"),
 		cfg.PrimaryEncodedPublicKey,
 		cfg.PrimaryAddr,
+		p.namespace,
+		p.labelsAndVals...,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create narwhal primary node client: %w", err)
@@ -84,9 +95,6 @@ func New(ctx context.Context, cfg *config.NarwhalMempoolConfig, opts ...PoolOpti
 
 func (p *Pool) CheckTxCallback(ctx context.Context, tx types.Tx, res *abci.ResponseCheckTx, txInfo mempool.TxInfo) mempool.OpResult {
 	ctx = withObservations(ctx)
-	defer func() {
-		p.logger.Debug("submit tx to narwhal", "took", observe.Since(ctx).String())
-	}()
 
 	workerC := p.workerSelectFn()
 	err := workerC.SubmitTransaction(ctx, tx, res.GasWanted)

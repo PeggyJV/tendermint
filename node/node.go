@@ -374,8 +374,14 @@ func createMempoolAndMempoolReactor(
 	state sm.State,
 	memplMetrics *mempl.Metrics,
 	logger log.Logger,
+	namespace, chainID string,
 ) (*mempl.ABCI, *mempl.Reactor, wal, error) {
 	mempoolLogger := logger.With("module", "mempool")
+
+	labelsNVals := []string{"chain_id", chainID}
+	poolMiddlewares := []mempl.PoolMiddleware{
+		mempl.ObservePool(mempoolLogger, namespace, labelsNVals...),
+	}
 
 	var (
 		mpABCI  *mempl.ABCI
@@ -387,12 +393,12 @@ func createMempoolAndMempoolReactor(
 		mempoolLogger.Info("setting up narwhal mempool")
 		var err error
 		// note that the narwhal mempool does not make use of a WAL or a reactor
-		mpABCI, err = newNarwhalMempoolABCI(ctx, mempoolLogger, proxyApp.Mempool(), config)
+		mpABCI, err = newNarwhalMempoolABCI(ctx, mempoolLogger, proxyApp.Mempool(), config, namespace, labelsNVals, poolMiddlewares...)
 		if err != nil {
 			return nil, nil, nil, err
 		}
 	default:
-		mpABCI, reactor, walImpl = newClistMempoolABCI(logger, state, proxyApp.Mempool(), config, memplMetrics)
+		mpABCI, reactor, walImpl = newClistMempoolABCI(logger, state, proxyApp.Mempool(), config, memplMetrics, poolMiddlewares...)
 	}
 
 	if config.Consensus.WaitForTxs() {
@@ -401,18 +407,23 @@ func createMempoolAndMempoolReactor(
 	return mpABCI, reactor, walImpl, nil
 }
 
-func newNarwhalMempoolABCI(ctx context.Context, logger log.Logger, appConn proxy.AppConnMempool, config *cfg.Config) (*mempl.ABCI, error) {
+func newNarwhalMempoolABCI(ctx context.Context, logger log.Logger, appConn proxy.AppConnMempool, config *cfg.Config, namespace string, labelsAndVals []string, poolMiddleware ...mempl.PoolMiddleware) (*mempl.ABCI, error) {
 	nLogger := logger.With("component", "narwhal_pool")
-	pool, err := narwhal.New(ctx, config.Narwhal, narwhal.WithLogger(nLogger))
+	narwhalPool, err := narwhal.New(ctx, config.Narwhal, narwhal.WithLogger(nLogger), narwhal.WithMetricsDetails(namespace, labelsAndVals...))
 	if err != nil {
 		return nil, err
+	}
+
+	var pool mempl.Pool = narwhalPool
+	for _, middleware := range poolMiddleware {
+		pool = middleware(pool)
 	}
 
 	return mempl.NewABCI(
 		logger.With("component", "abci"),
 		config.Mempool,
 		appConn,
-		mempl.ObservePool(nLogger)(pool),
+		pool,
 	), nil
 }
 
@@ -422,6 +433,7 @@ func newClistMempoolABCI(
 	appConn proxy.AppConnMempool,
 	config *cfg.Config,
 	memplMetrics *mempl.Metrics,
+	poolMiddleware ...mempl.PoolMiddleware,
 ) (*mempl.ABCI, *mempl.Reactor, wal) {
 	clistPool := mempl.NewPoolCList(
 		config.Mempool,
@@ -433,7 +445,10 @@ func newClistMempoolABCI(
 	clistLogger := logger.With("component", "pool_clist")
 	clistPool.SetLogger(clistLogger)
 
-	pool := mempl.ObservePool(clistLogger)(clistPool)
+	var pool mempl.Pool = clistPool
+	for _, middleware := range poolMiddleware {
+		pool = middleware(pool)
+	}
 
 	mpABCI := mempl.NewABCI(
 		logger.With("component", "abci"),
@@ -826,7 +841,16 @@ func NewNode(config *cfg.Config,
 	csMetrics, p2pMetrics, memplMetrics, smMetrics := metricsProvider(genDoc.ChainID)
 
 	// Make MempoolReactor
-	mpABCI, mempoolReactor, clistPool, err := createMempoolAndMempoolReactor(ctx, config, proxyApp, state, memplMetrics, logger)
+	mpABCI, mempoolReactor, clistPool, err := createMempoolAndMempoolReactor(
+		ctx,
+		config,
+		proxyApp,
+		state,
+		memplMetrics,
+		logger,
+		config.Instrumentation.Namespace,
+		genDoc.ChainID,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create mempool: %w", err)
 	}

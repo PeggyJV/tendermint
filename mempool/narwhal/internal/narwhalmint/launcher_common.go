@@ -85,8 +85,12 @@ func (t testDirs) nodeNetworkWorkerKeyFiles(nodeName string, workerIDs []string)
 	return strings.Join(files, ",")
 }
 
-func (t testDirs) nodeParameterFile(nodeName string) string {
-	return filepath.Join(t.nodeDir(nodeName), "parameters.json")
+func (t testDirs) nodeParameterPrimaryFile(nodeName string) string {
+	return filepath.Join(t.nodeDir(nodeName), "parameters_primary.json")
+}
+
+func (t testDirs) nodeParameterWorkerFile(nodeName, workerID string) string {
+	return filepath.Join(t.nodeDir(nodeName), "parameters_worker_"+workerID+".json")
 }
 
 type readyMsg struct {

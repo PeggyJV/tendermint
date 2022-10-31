@@ -80,7 +80,9 @@ type tmClientRunner struct {
 	mSyncStats map[string]tmNodeStatus
 
 	mStats map[string]*clientStats
-	took   time.Duration
+
+	starter chan chan struct{}
+	took    time.Duration
 }
 
 func newTMClientRunner(w io.Writer, clients []*narwhalmint.TMClient, maxTxs, maxConcurrent int) *tmClientRunner {
@@ -104,6 +106,7 @@ func newTMClientRunner(w io.Writer, clients []*narwhalmint.TMClient, maxTxs, max
 		clients:           clients,
 		mStats:            mStats,
 		mSyncStats:        make(map[string]tmNodeStatus),
+		starter:           make(chan chan struct{}),
 	}
 }
 
@@ -179,7 +182,6 @@ func (r *tmClientRunner) submitClientTMTxs(ctx context.Context) <-chan struct{} 
 	start := time.Now()
 	done := make(chan struct{})
 	msgStream := make(chan clientMsg)
-	r.progress.Start()
 
 	go func(clients []*narwhalmint.TMClient) {
 		defer close(msgStream)
@@ -204,11 +206,37 @@ func (r *tmClientRunner) submitClientTMTxs(ctx context.Context) <-chan struct{} 
 		r.took = time.Since(start)
 	}()
 
+	afterReadyFn, err := r.waitForReady(ctx)
+	if err != nil {
+		panic("unexpected failure to prepare: " + err.Error())
+	}
+	r.progress.Start()
+	afterReadyFn()
+
 	return done
 }
 
 func (r *tmClientRunner) applyMsg(msg clientMsg) {
 	r.mStats[msg.name].applyMsg(msg)
+}
+
+func (r *tmClientRunner) waitForReady(ctx context.Context) (func(), error) {
+	var readyChans []chan struct{}
+	for i := 0; i < len(r.clients); i++ {
+		readyChan := make(chan struct{})
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case r.starter <- readyChan:
+			readyChans = append(readyChans, readyChan)
+		}
+	}
+
+	return func() {
+		for _, readyChan := range readyChans {
+			close(readyChan)
+		}
+	}, nil
 }
 
 func (r *tmClientRunner) submitTMTxs(ctx context.Context, cl *narwhalmint.TMClient, start time.Time, msgStream chan<- clientMsg) {
@@ -233,6 +261,12 @@ func (r *tmClientRunner) submitTMTxs(ctx context.Context, cl *narwhalmint.TMClie
 			completed = strutil.PadLeft(completed, 18, ' ')
 			return fmt.Sprintf("    %s %s", strutil.Resize("node "+cl.NodeName, 20), completed)
 		})
+
+	select {
+	case <-ctx.Done():
+		return
+	case <-<-r.starter:
+	}
 
 	for i := 0; i <= maxTxs; i++ {
 		sem <- struct{}{}

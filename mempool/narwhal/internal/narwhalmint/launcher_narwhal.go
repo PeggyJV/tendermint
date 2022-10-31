@@ -73,14 +73,18 @@ func (l *LauncherNarwhal) Dir() string {
 type (
 	NarwhalOpt struct {
 		NodeName   string
-		PrimHost   string
-		PrimPort   string
 		GRPCHost   string
 		GRPCPort   string
+		PrimHost   string
+		PrimPort   string
+		PromHost   string
+		PromPort   string
 		WorkerOpts []NarwhalWorkerOpt
 	}
 
 	NarwhalWorkerOpt struct {
+		PromHost   string
+		PromPort   string
 		TxsHost    string
 		TxsPort    string
 		WorkerHost string
@@ -340,10 +344,17 @@ func (l *LauncherNarwhal) setupTestEnv(ctx context.Context, now time.Time, opts 
 
 func (l *LauncherNarwhal) writeParameterFiles() error {
 	for nodeName, auth := range l.committeeCFG.Authorities {
-		paramFile := l.dirs.nodeParameterFile(nodeName)
-		err := writeParametersFile(paramFile, string(auth.GRPC), l.BatchSize, l.HeaderSize, l.BatchDelay, l.HeaderDelay)
-		if err != nil {
-			return fmt.Errorf("failed to write parameters file(%s): %w", paramFile, err)
+		files := map[string]Multiaddr{
+			l.dirs.nodeParameterPrimaryFile(nodeName): auth.PromAddr,
+		}
+		for workerID, workerCFG := range auth.Workers {
+			files[l.dirs.nodeParameterWorkerFile(nodeName, workerID)] = workerCFG.PromAddr
+		}
+		for paramFile, promAddr := range files {
+			err := writeParametersFile(paramFile, string(auth.GRPC), string(promAddr), l.BatchSize, l.HeaderSize, l.BatchDelay, l.HeaderDelay)
+			if err != nil {
+				return fmt.Errorf("failed to write parameters file(%s): %w", paramFile, err)
+			}
 		}
 	}
 	return nil
@@ -360,7 +371,8 @@ func runPrimary(ctx context.Context, readyStream chan<- readyMsg, dirs testDirs,
 	label := "primary"
 
 	readyTailer := newNarwhalReadyWriter(ctx, readyStream, "primary", nodeName, "")
-	err := runNodeExecCmd(ctx, readyTailer, dirs, nodeName, label, workerIDs, "primary", "--consensus-disabled")
+	paramFile := dirs.nodeParameterPrimaryFile(nodeName)
+	err := runNodeExecCmd(ctx, readyTailer, dirs, nodeName, label, paramFile, workerIDs, "primary", "--consensus-disabled")
 	if err != nil {
 		return fmt.Errorf("node %s encountered runtime error: %w", nodeName, err)
 	}
@@ -371,14 +383,15 @@ func runWorker(ctx context.Context, readyStream chan<- readyMsg, dirs testDirs, 
 	label := "worker_" + workerID
 
 	readyTailer := newNarwhalReadyWriter(ctx, readyStream, "worker", nodeName, workerID)
-	err := runNodeExecCmd(ctx, readyTailer, dirs, nodeName, label, workerIDs, "worker", "--id", workerID)
+	paramFile := dirs.nodeParameterWorkerFile(nodeName, workerID)
+	err := runNodeExecCmd(ctx, readyTailer, dirs, nodeName, label, paramFile, workerIDs, "worker", "--id", workerID)
 	if err != nil {
 		return fmt.Errorf("node %s worker %s encountered runtime error: %w", nodeName, workerID, err)
 	}
 	return nil
 }
 
-func runNodeExecCmd(ctx context.Context, readyTailer io.Writer, dirs testDirs, nodeName, label string, workerIDs []string, subCmd string, subCmdArgs ...string) error {
+func runNodeExecCmd(ctx context.Context, readyTailer io.Writer, dirs testDirs, nodeName, label, paramFile string, workerIDs []string, subCmd string, subCmdArgs ...string) error {
 	f, closeFn, err := newLogFileWriter(dirs.nodeLogFile(nodeName, label))
 	if err != nil {
 		return fmt.Errorf("failed to create log file for node %s: %w", nodeName, err)
@@ -392,7 +405,7 @@ func runNodeExecCmd(ctx context.Context, readyTailer io.Writer, dirs testDirs, n
 		"--primary-keys", dirs.nodeKeyFile(nodeName),
 		"--committee", dirs.committeePrimaryFile(),
 		"--primary-network-keys", dirs.nodeNetworkPrimaryKeyFile(nodeName),
-		"--parameters", dirs.nodeParameterFile(nodeName),
+		"--parameters", paramFile,
 		"--store", dirs.nodeDBDir(nodeName, label),
 		"--workers", dirs.committeeWorkerFile(),
 		"--worker-keys", dirs.nodeNetworkWorkerKeyFiles(nodeName, workerIDs),
@@ -511,12 +524,14 @@ type (
 		NetworkKey     string               `json:"network_key"`
 		PrimaryAddress Multiaddr            `json:"primary_address"`
 		GRPC           Multiaddr            `json:"-"`
+		PromAddr       Multiaddr            `json:"-"`
 		Stake          int                  `json:"stake"`
 		Workers        map[string]WorkerCFG `json:"-"`
 	}
 
 	WorkerCFG struct {
 		NetworkKey   string    `json:"name"`
+		PromAddr     Multiaddr `json:"-"`
 		Transactions Multiaddr `json:"transactions"`
 		WorkerAddr   Multiaddr `json:"worker_address"`
 	}
@@ -587,7 +602,7 @@ func (l *LauncherNarwhal) setupCommitteeCFG(opts []NarwhalOpt) (committeePrimari
 		if i < len(opts) {
 			opt = opts[i]
 		}
-		primAddr, grpcAddr, err := newPrimaryCFG(portFact, l.Host, opt)
+		primAddr, grpcAddr, promAddr, err := newPrimaryCFG(portFact, l.Host, opt)
 		if err != nil {
 			return committeePrimariesCFG{}, fmt.Errorf("failed to create pimary cfg: %w", err)
 		}
@@ -599,6 +614,7 @@ func (l *LauncherNarwhal) setupCommitteeCFG(opts []NarwhalOpt) (committeePrimari
 
 		committee.Authorities[authority] = AuthorityCFG{
 			PrimaryAddress: primAddr,
+			PromAddr:       promAddr,
 			GRPC:           grpcAddr,
 			NetworkKey:     l.mPrimaryNetworkKeys[authority],
 			Stake:          1,
@@ -616,16 +632,17 @@ func strOrDef(in, defValue string) string {
 	return in
 }
 
-func newPrimaryCFG(portFact *portFactory, host string, opt NarwhalOpt) (Multiaddr, Multiaddr, error) {
-	ports, err := portFact.newRandomPorts(2)
+func newPrimaryCFG(portFact *portFactory, host string, opt NarwhalOpt) (Multiaddr, Multiaddr, Multiaddr, error) {
+	ports, err := portFact.newRandomPorts(3)
 	if err != nil {
-		return "", "", fmt.Errorf("failed to create primary cfg: %w", err)
+		return "", "", "", fmt.Errorf("failed to create primary cfg: %w", err)
 	}
 
 	prim2PrimAddr := newNarwhalMultiAddr(strOrDef(opt.PrimHost, host), strOrDef(opt.PrimPort, ports[0]))
 	grpcAddr := newNarwhalMultiAddr(strOrDef(opt.GRPCHost, host), strOrDef(opt.GRPCPort, ports[1]))
+	promAddr := newNarwhalMultiAddr(strOrDef(opt.PromHost, host), strOrDef(opt.PromPort, ports[2]))
 
-	return prim2PrimAddr, grpcAddr, nil
+	return prim2PrimAddr, grpcAddr, promAddr, nil
 }
 
 func newWorkerCFGs(portFact *portFactory, host string, numWorkers int, workerOpts []NarwhalWorkerOpt, mWorkerNetworkKeys map[int]string) (map[string]WorkerCFG, error) {
@@ -649,24 +666,26 @@ func newWorkerCFGs(portFact *portFactory, host string, numWorkers int, workerOpt
 }
 
 func newWorkerCFG(portFact *portFactory, host string, opt NarwhalWorkerOpt, networkKey string) (WorkerCFG, error) {
-	ports, err := portFact.newRandomPorts(2)
+	ports, err := portFact.newRandomPorts(3)
 	if err != nil {
 		return WorkerCFG{}, err
 	}
 
 	workerAddr := newNarwhalMultiAddr(strOrDef(opt.WorkerHost, host), strOrDef(opt.WorkerPort, ports[0]))
 	txsAddr := newNarwhalMultiAddr(strOrDef(opt.TxsHost, host), strOrDef(opt.TxsPort, ports[1]))
+	promAddr := newNarwhalMultiAddr(strOrDef(opt.PromHost, host), strOrDef(opt.PromPort, ports[2]))
 
 	cfg := WorkerCFG{
-		WorkerAddr:   workerAddr,
-		Transactions: txsAddr,
 		NetworkKey:   networkKey,
+		PromAddr:     promAddr,
+		Transactions: txsAddr,
+		WorkerAddr:   workerAddr,
 	}
 
 	return cfg, nil
 }
 
-func writeParametersFile(filename, grpcAddr string, batchSize, headerSize int, batchDelay, headerDelay time.Duration) error {
+func writeParametersFile(filename, grpcAddr, promAddr string, batchSize, headerSize int, batchDelay, headerDelay time.Duration) error {
 	// contents pulled from mystenlabs/narwhal demo
 	tmpl := `
 {
@@ -692,12 +711,12 @@ func writeParametersFile(filename, grpcAddr string, batchSize, headerSize int, b
 		"worker_network_admin_server_base_port": 0
 	},
     "prometheus_metrics": {
-        "socket_addr": "/ip4/127.0.0.1/tcp/0/http"
+        "socket_addr": "%s"
     },
     "sync_retry_delay": "10_000ms",
     "sync_retry_nodes": 3
 }`
-	contents := fmt.Sprintf(tmpl, batchSize, grpcAddr, headerSize, batchDelay, headerDelay)
+	contents := fmt.Sprintf(tmpl, batchSize, grpcAddr, headerSize, batchDelay, headerDelay, promAddr)
 	return os.WriteFile(filename, []byte(contents), os.ModePerm)
 }
 

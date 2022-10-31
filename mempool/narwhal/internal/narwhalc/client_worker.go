@@ -22,14 +22,14 @@ type WorkerClient struct {
 }
 
 // NewWorkerClient creates a new narwhal worker node client.
-func NewWorkerClient(ctx context.Context, addr, name string) (*WorkerClient, error) {
+func NewWorkerClient(ctx context.Context, addr, name, namespace string, labelsAndVals ...string) (*WorkerClient, error) {
 	cc, err := newGRPCConnection(ctx, addr)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create grpc connection for worker at addr(%s): %w", addr, err)
 	}
 
 	return &WorkerClient{
-		tc:   narwhalproto.NewTransactionsClient(cc),
+		tc:   txsMetrics(namespace, labelsAndVals...)(narwhalproto.NewTransactionsClient(cc)),
 		done: ctx.Done(),
 		clientBase: clientBase{
 			meta: NodeMeta{

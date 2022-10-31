@@ -33,7 +33,10 @@ function start_narwhal_primary() {
 	# ( ) Narwhal ( )
 	#  (/ Primary \)
 	#   (.·´¯`·.¸¸)
-	LOG_LVL="-vv" start_narwhal_node --store "$NARNODE/dbs/primary" primary --consensus-disabled >> $NAR_PRIM_LOGFILE 2>&1 &
+	LOG_LVL="-vv" start_narwhal_node \
+		--parameters "$NARNODE/parameters_primary.json" \
+		--store "$NARNODE/dbs/primary" \
+		primary --consensus-disabled >> $NAR_PRIM_LOGFILE 2>&1 &
   echo "narwhal primary node running... logfile at $NAR_PRIM_LOGFILE"
 }
 
@@ -50,7 +53,10 @@ function start_narwhal_worker() {
 	#    # ( ) Narwhal ( )
 	#    #  (/ Worker  \)
 	#    #   (.·´¯`·.¸¸)
-  LOG_LVL="-vvv" start_narwhal_node --store "$NARNODE/dbs/worker" worker --id "0" >> $NAR_WORKER_LOGFILE 2>&1 &
+  LOG_LVL="-vvv" start_narwhal_node \
+		--parameters "$NARNODE/parameters_worker_0.json" \
+		--store "$NARNODE/dbs/worker" \
+		worker --id "0" >> $NAR_WORKER_LOGFILE 2>&1 &
 	echo "narwhal worker node running... logfile at $NAR_WORKER_LOGFILE"
 }
 
@@ -67,6 +73,5 @@ function start_narwhal_node() {
 			--committee "$NARHOME/primaries.json" \
 			--workers "$NARHOME/workers.json" \
 			--worker-keys "$NARNODE_HOME/worker_0_network_key.json" \
-			--parameters "$NARNODE_HOME/parameters.json" \
 		"$@"
 }

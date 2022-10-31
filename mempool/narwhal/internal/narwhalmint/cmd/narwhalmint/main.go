@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -28,28 +29,29 @@ func newCMD() *cobra.Command {
 }
 
 type builder struct {
-	outputDir      string
-	batchSize      int
-	batchDelay     time.Duration
-	checkDur       time.Duration
-	follow         bool
-	followDur      time.Duration
-	headerSize     int
-	headerDelay    time.Duration
-	host           string
-	json           bool
-	logFmt         string
-	logLevel       string
-	maxConcurrency int
-	maxTxs         int
-	metricsPort    int
-	p2pPort        string
-	primaries      int
-	proxyApp       string
-	reapDur        time.Duration
-	rpcPort        string
-	testnetID      string
-	workers        int
+	outputDir                 string
+	batchSize                 int
+	batchDelay                time.Duration
+	checkDur                  time.Duration
+	follow                    bool
+	followDur                 time.Duration
+	headerSize                int
+	headerDelay               time.Duration
+	host                      string
+	json                      bool
+	logFmt                    string
+	logLevel                  string
+	maxConcurrency            int
+	maxTxs                    int
+	narwhalPrimaryMetricsPort int
+	narwhalWorkerMetricsPort  int
+	p2pPort                   string
+	primaries                 int
+	proxyApp                  string
+	reapDur                   time.Duration
+	rpcPort                   string
+	tmMetricsPort             int
+	workers                   int
 }
 
 func (b *builder) cmd() *cobra.Command {
@@ -70,7 +72,7 @@ func (b *builder) cmd() *cobra.Command {
 		b.cmdConfigGen(),
 		b.cmdLoad(),
 		b.cmdStats(),
-		b.cmdTelegrafConfig(),
+		b.cmdPromConfig(),
 	)
 
 	return &cmd
@@ -177,19 +179,30 @@ func (b *builder) configGenRunE(cmd *cobra.Command, _ []string) error {
 
 	var opts []narwhalmint.NarwhalOpt
 	for externalIP, internalIP := range mIPs {
-		opts = append(opts, narwhalmint.NarwhalOpt{
+		opt := narwhalmint.NarwhalOpt{
 			NodeName: internalIP,
 			PrimHost: externalIP,
 			PrimPort: "54192",
 			GRPCHost: internalIP,
 			GRPCPort: "54193",
+			PromHost: internalIP,
+			PromPort: "54194",
 			WorkerOpts: []narwhalmint.NarwhalWorkerOpt{{
+				PromHost:   internalIP,
+				PromPort:   "54195",
 				TxsHost:    internalIP,
-				TxsPort:    "54194",
 				WorkerHost: externalIP,
-				WorkerPort: "54195",
+				TxsPort:    "54196",
+				WorkerPort: "54197",
 			}},
-		})
+		}
+		if b.narwhalPrimaryMetricsPort > -1 {
+			opt.PromPort = strconv.Itoa(b.narwhalPrimaryMetricsPort)
+		}
+		if b.narwhalWorkerMetricsPort > -1 {
+			opt.WorkerOpts[0].PromPort = strconv.Itoa(b.narwhalWorkerMetricsPort)
+		}
+		opts = append(opts, opt)
 	}
 
 	ltm, lnarwhal := b.newLaunchers(cmd.OutOrStdout())
@@ -236,8 +249,8 @@ func (b *builder) newLaunchers(out io.Writer) (*narwhalmint.LauncherTendermint, 
 		ReapDuration: b.reapDur,
 		Out:          out,
 	}
-	if b.metricsPort >= 0 {
-		ltm.MetricsPort = fmt.Sprintf(":%d", b.metricsPort)
+	if b.tmMetricsPort >= 0 {
+		ltm.MetricsPort = fmt.Sprintf(":%d", b.tmMetricsPort)
 	}
 
 	return &ltm, &lnarwhal
@@ -264,6 +277,7 @@ func (b *builder) registerHostFlag(cmd *cobra.Command) {
 }
 
 func (b *builder) registerNarwhalConfigFlags(cmd *cobra.Command) {
+	b.registerNarwhalMetricsPort(cmd)
 	cmd.Flags().IntVar(&b.batchSize, "batch-size", 1<<14, "size of narwhal worker batches in bytes")
 	cmd.Flags().DurationVar(&b.batchDelay, "batch-delay", 200*time.Millisecond, "max delay for batches to aggregate")
 	cmd.Flags().IntVar(&b.headerSize, "header-size", 1<<8, "narwhal worker batches per header")
@@ -287,7 +301,12 @@ func (b *builder) registerTMFlags(cmd *cobra.Command) {
 }
 
 func (b *builder) registerTMMetricsPort(cmd *cobra.Command) {
-	cmd.Flags().IntVar(&b.metricsPort, "metrics-port", -1, "port prom metrics can be scraped")
+	cmd.Flags().IntVar(&b.tmMetricsPort, "tm-metrics-port", -1, "port prom metrics can be scraped")
+}
+
+func (b *builder) registerNarwhalMetricsPort(cmd *cobra.Command) {
+	cmd.Flags().IntVar(&b.narwhalPrimaryMetricsPort, "narwhal-primary-metrics-port", -1, "port to scrape narwhal metrics")
+	cmd.Flags().IntVar(&b.narwhalWorkerMetricsPort, "narwhal-worker-metrics-port", -1, "port to scrape narwhal metrics")
 }
 
 func configsExists(root string) bool {

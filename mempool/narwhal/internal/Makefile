@@ -6,22 +6,22 @@
 OS := $(shell uname)
 TS := $(shell date +"%m-%d_%T")
 PWD := $(shell pwd)
-INFLUXDB :=influxdb
-INFLUXDB_TOKEN ?="the-secret-auth-token"#don't actually care about it being secure....
+REMOTE_HOME_DIR := /home/jwberged
 TMP :=$(shell mktemp -d)
-TESTNET_CONFIGURATIONS_FILE="demo/steps.jsonl"
 TESTNET_CONFIG_DIR ?= demo/testnet_configs
-export TESTNET_ID ?=$(shell echo "$$RANDOM")
 export DIR ?= demo/${TS}
 export DEPLOY_ARGS ?=
 export DESTROY_ARGS ?=
 export LOAD_ARGS ?= --concurrency 1 --txs 10000
-export SETUP_DIR ?= 60
+export SETUP_DIR ?= 90
 export WAIT_DUR ?= 30
-export FOLLOW_DUR ?= 10m
+export FOLLOW_DUR ?= 5m
 FOLLOW_ARGS ?= --for $(FOLLOW_DUR)
 export STAT_ARGS ?= --json
-export SETUP_ARGS ?= --log-format "json" --log-level "debug" --metrics-port 26660
+export METRIC_ARGS ?= --tm-metrics-port 26660 --narwhal-primary-metrics-port 54194 --narwhal-worker-metrics-port 54195
+export SETUP_ARGS ?= --log-format "json" $(METRIC_ARGS)
+SSH_ARGS :=-o ConnectTimeout=300 -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
+ZIP_EXCLUDE_ARGS :=-x "narwhal/nodes/*/dbs/*" -x "tendermint/nodes/*/data/*"
 
 all: demo_confirmed
 .PHONY: all
@@ -80,76 +80,52 @@ setup_gce_instances: build_narwhalmint
         cd $(PWD) && \
     for ip in $$(MAKE instance_ext_ips | jq -r '.[]'); do \
     	echo "\\nstarting $$ip TM and narwhal nodes..." && \
-    	ssh -q -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "jwberged@$$ip" "sudo bash /usr/local/lib/start.sh $$ZIP_FILE" ; \
+    	ssh -q $(SSH_ARGS) "jwberged@$$ip" "sudo bash /usr/local/lib/start.sh $$ZIP_FILE" ; \
     done
 .PHONY: setup_gce_instances
 
 run_new_instances: deploy_gce_instances
-	sleep $(SETUP_DIR) && MAKE setup_gce_instances
+	@ echo "waiting $(SETUP_DIR)s for instances to ready" && \
+ 		sleep $(SETUP_DIR) && \
+ 		MAKE start_observability && \
+ 		MAKE setup_gce_instances
 .PHONY: run_new_instances
 
-start_influxdb: stop_influxdb mk_observe_dir
-	@docker run -d --name $(INFLUXDB) -p 8086:8086 \
-	   -v $(PWD)/demo/_observability/data:/var/lib/influxdb2 \
-	   -v $(PWD)/demo/_observability/config:/etc/influxdb2 \
-	   -e DOCKER_INFLUXDB_INIT_MODE=setup \
-	   -e DOCKER_INFLUXDB_INIT_USERNAME=narwhalmint \
-	   -e DOCKER_INFLUXDB_INIT_PASSWORD=password123 \
-	   -e DOCKER_INFLUXDB_INIT_ORG=peggy \
-	   -e DOCKER_INFLUXDB_INIT_BUCKET=tm \
-	   -e DOCKER_INFLUXDB_INIT_ADMIN_TOKEN=$(INFLUXDB_TOKEN) \
-	   influxdb:2.4-alpine
-.PHONY: start_influxdb
+start_observability: stop_observability
+start_observability: prom_config
+	@docker compose up -d
+.PHONY: start_observability
 
-stop_influxdb:
-	@docker stop influxdb && docker rm -f influxdb
-.PHONY: stop_influxdb
+stop_observability:
+	@docker compose down
+.PHONY: stop_observability
 
-start_telegraf: stop_telegraf telegraf_config
-	@docker run -d --name telegraf \
-		--net=container:$(INFLUXDB) \
-		-e INFLUXDB_TOKEN=$(INFLUXDB_TOKEN) \
-		-v $(PWD)/demo/_observability/telegraf.conf:/etc/telegraf/telegraf.conf:ro \
-		telegraf:1.24
-.PHONY: start_telegraf
-
-stop_telegraf:
-	@docker stop telegraf && docker rm -f telegraf || true
-.PHONY: stop_telegraf
-
-telegraf_config: mk_observe_dir build_narwhalmint
-	@MAKE instance_ext_ips | \
-		narwhalmint telegraf-config --metrics-port 26660 --testnet-id $(TESTNET_ID) > demo/_observability/telegraf.conf
-.PHONY: telegraf_config
+prom_config:
+	@MAKE instance_ext_ips | narwhalmint prom-config $(METRIC_ARGS) > demo/_observability/prom/prometheus.yml
+.PHONY: prom_config
 
 mk_observe_dir:
-	@mkdir -p demo/_observability
+	@mkdir -p demo/_observability/grafana/datasource && mkdir -p demo/_observability/prom
 .PHONY: mk_observe_dir
 
-demo: run_new_instances start_influxdb
-	MAKE start_telegraf && \
+demo: DIR :=demo/$(shell date +"%m-%d_%T")
+demo: run_new_instances
 	echo "waiting $(WAIT_DUR)s for nodes to be ready" && \
 	sleep $(WAIT_DUR) && \
 	mkdir -p $(DIR) && \
-	cp demo/_observability/telegraf.conf $(DIR)/telegraf.conf && \
-	MAKE write_args_to_dir && \
+	MAKE write_args_to_dir  && \
 	MAKE load-test && \
 	MAKE follow-nodes && \
 	MAKE zip_logs && \
 	MAKE destroy_gce_instances
 .PHONY: demo
 
-write_args_to_dir:
-	@MAKE instance_ipset | \
-		jq '{ "ipset": ., "load": "$(LOAD_ARGS)", "deploy": "$(DEPLOY_ARGS)", "follow": "$(FOLLOW_ARGS)", "testnet_id": "$(TESTNET_ID)" }' > $(DIR)/testrun_args.json
-.PHONY: write_args_to_dir
-
 demo_confirmed: DESTROY_ARGS=-auto-approve
 demo_confirmed: demo
 .PHONY: demo_confirmed
 
 run_testnet_configs:
-	@for filename in $$(ls $(TESTNET_CONFIG_DIR)) ; do \
+	@for filename in $$(ls $(TESTNET_CONFIG_DIR) | grep '.json') ; do \
 		export tmp=$$(cat $(TESTNET_CONFIG_DIR)/$$filename) ; \
 		echo "\\ntestnet config to be executed: $$(echo $$tmp | jq -c)\\n" && \
 		MAKE demo_confirmed \
@@ -171,6 +147,11 @@ node-stats: build_narwhalmint
 	@MAKE instance_ext_ips | narwhalmint stats $(STAT_ARGS)
 .PHONY: node-stats
 
+write_args_to_dir:
+	@MAKE instance_ipset | \
+		jq '{ "ipset": ., "load": "$(LOAD_ARGS)", "deploy": "$(DEPLOY_ARGS)", "follow": "$(FOLLOW_ARGS)" }' > $(DIR)/testrun_args.json
+.PHONY: write_args_to_dir
+
 upload_instance_files:
 	gsutil cp terraform/start.sh gs://narwhalmint/start.sh
 	gsutil cp terraform/start_services.sh gs://narwhalmint/start_services.sh
@@ -178,12 +159,12 @@ upload_instance_files:
 
 kill_validator_processes:
 	@ for ip in $$(MAKE instance_ext_ips | jq -r '.[]') ; do \
-		ssh -q -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null jwberged@$$ip "sudo pkill -9 tendermint && echo \"$$ip tendermint process terminated\" || true" ; \
-		ssh -q -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null jwberged@$$ip "sudo pkill -9 narwhal_node && echo \"$$ip narwhal_node processes terminated\" || true" ; \
+		ssh -q $(SSH_ARGS) jwberged@$$ip "sudo pkill -9 tendermint && echo \"$$ip tendermint process terminated\" || true" ; \
+		ssh -q $(SSH_ARGS) jwberged@$$ip "sudo pkill -9 narwhal_node && echo \"$$ip narwhal_node processes terminated\" || true" ; \
 	done
 .PHONY: kill_validator_processes
 
-zip_logs: build_narwhalmint rm_zipped_logs
+zip_logs: build_narwhalmint
 	@mkdir -p $(DIR) && echo "created dir $(DIR)" && \
 	MAKE node-stats | jq > "$(DIR)/summary.json" && echo "added $(DIR)/summary.json successfully\\n" && \
 	echo "killing validator processes" && MAKE kill_validator_processes && \
@@ -191,10 +172,10 @@ zip_logs: build_narwhalmint rm_zipped_logs
 	for ipset in $$(MAKE instance_ipset | jq -c '.[]') ; do \
 		export ip="$$(echo $$ipset | jq -r '.external_ip')" ; \
 		echo "zipping config and logs for $$ip (perm denied issues expected)..." && \
-		ssh -q -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null jwberged@$$ip \
-			'IP=$$(hostname -i) cd /usr/local/lib && zip -q -r "$$HOME/output.zip" narwhal/*.json "narwhal/nodes/$$IP" "tendermint/nodes/$$IP"' ; \
+		ssh -q $(SSH_ARGS) jwberged@$$ip \
+			'IP=$$(hostname -i) rm -f $(REMOTE_HOME_DIR)/output.zip && cd /usr/local/lib && zip "$(REMOTE_HOME_DIR)/output.zip" -q -r . -x "python3.9/*" $(ZIP_EXCLUDE_ARGS) narwhal/*.json "narwhal/nodes/$$IP" "tendermint/nodes/$$IP"' ; \
 		echo "copying output.zip from $$ip to $(DIR)/$$ip.zip" && \
-		scp -q -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null jwberged@$$ip:'$$HOME/output.zip' "$(DIR)/$$ip.zip" && \
+		scp -q $(SSH_ARGS) jwberged@$$ip:'$(REMOTE_HOME_DIR)/output.zip' "$(DIR)/$$ip.zip" && \
 		echo "unzipping $(DIR)/$$ip.zip in $(DIR)" && \
 		unzip -q -n -d $(DIR) $(DIR)/$$ip.zip && rm $(DIR)/$$ip.zip ; \
 		export log_dir="$(DIR)/tendermint/nodes/$$(echo $$ipset | jq -r '.internal_ip')/logs" ; \
@@ -210,7 +191,7 @@ zip_logs: build_narwhalmint rm_zipped_logs
 
 rm_zipped_logs:
 	@ for ip in $$(MAKE instance_ext_ips | jq -r '.[]') ; do \
-		ssh -q -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null jwberged@$$ip 'rm -f $$HOME/output.zip && echo "$$HOME/output.zip removed successfully"' ; \
+		echo "removing output.zip file " && ssh -q $(SSH_ARGS) jwberged@$$ip 'rm -f $(REMOTE_HOME_DIR)/output.zip' ; \
 	done
 .PHONY: rm_zipped_logs
 

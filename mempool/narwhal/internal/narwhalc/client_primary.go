@@ -29,7 +29,7 @@ type PrimaryClient struct {
 
 // NewPrimaryClient constructs a primary node client from the gprc conn and the additional
 // metadata used to identify the narwhal node.
-func NewPrimaryClient(ctx context.Context, logger log.Logger, nodeEncodedPK, addr string) (*PrimaryClient, error) {
+func NewPrimaryClient(ctx context.Context, logger log.Logger, nodeEncodedPK, addr, namespace string, labelsAndVals ...string) (*PrimaryClient, error) {
 	cc, err := newGRPCConnection(ctx, addr)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create grpc connection for primary with addr(%s): %w", addr, err)
@@ -43,8 +43,8 @@ func NewPrimaryClient(ctx context.Context, logger log.Logger, nodeEncodedPK, add
 	return &PrimaryClient{
 		logger:    logger,
 		publicKey: publicKey,
-		vc:        narwhalproto.NewValidatorClient(cc),
-		pc:        narwhalproto.NewProposerClient(cc),
+		vc:        validatorMetrics(namespace, labelsAndVals...)(narwhalproto.NewValidatorClient(cc)),
+		pc:        proposerMetrics(namespace, labelsAndVals...)(narwhalproto.NewProposerClient(cc)),
 		clientBase: clientBase{
 			meta: NodeMeta{
 				Name: nodeEncodedPK,

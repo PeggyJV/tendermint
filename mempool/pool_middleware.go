@@ -15,48 +15,76 @@ type PoolMiddleware func(pool Pool) Pool
 type middlewareStats struct {
 	logger log.Logger
 	next   Pool
+
+	checkTxCallbackRED observe.RED
+	checkTxPrepRED     observe.RED
+	flushRED           observe.RED // this sounds bad.... >_<
+	globalCheckRED     observe.RED
+	hydrateBlockRED    observe.RED
+	onBlockFinalityRED observe.RED
+	reapRED            observe.RED
+	recheckRED         observe.RED
+	removeRED          observe.RED
 }
 
-func ObservePool(logger log.Logger) PoolMiddleware {
+func ObservePool(logger log.Logger, namespace string, labelsAndVals ...string) PoolMiddleware {
+	labelsAndVals = append(labelsAndVals, "component", "pool_middleware")
+	newRED := func(opName string) observe.RED {
+		return observe.NewRED(namespace, MetricsSubsystem, opName, labelsAndVals...)
+	}
 	return func(pool Pool) Pool {
 		return &middlewareStats{
-			logger: logger,
+			logger: logger.With("component", "pool_observer"),
 			next:   pool,
+
+			checkTxCallbackRED: newRED("check_tx_callback"),
+			checkTxPrepRED:     newRED("check_tx_prep"),
+			flushRED:           newRED("flush_pool"),
+			globalCheckRED:     newRED("global_check"),
+			hydrateBlockRED:    newRED("hydrate_block_data"),
+			onBlockFinalityRED: newRED("on_block_finality"),
+			reapRED:            newRED("reap_pool"),
+			recheckRED:         newRED("recheck_pool"),
+			removeRED:          newRED("remove_pool"),
 		}
 	}
 }
 
 func (m *middlewareStats) CheckTxCallback(ctx context.Context, tx types.Tx, res *abci.ResponseCheckTx, txInfo TxInfo) OpResult {
 	ctx = withObservations(ctx)
-	defer m.observeOp(ctx, "CheckTxCallback")
+	defer m.observe(ctx, m.checkTxCallbackRED, "CheckTxCallback")(nil)
 	return m.next.CheckTxCallback(ctx, tx, res, txInfo)
 }
 
 func (m *middlewareStats) CheckTxPrep(ctx context.Context, tx types.Tx) error {
 	ctx = withObservations(ctx)
-	defer m.observeOp(ctx, "CheckTxPrep")
-	return m.next.CheckTxPrep(ctx, tx)
+	record := m.observe(ctx, m.checkTxPrepRED, "CheckTxPrep")
+	return record(m.next.CheckTxPrep(ctx, tx))
 }
 
 func (m *middlewareStats) Flush(ctx context.Context) error {
 	ctx = withObservations(ctx)
-	defer m.observeOp(ctx, "Flush")
-	return m.next.Flush(ctx)
+	record := m.observe(ctx, m.flushRED, "Flush")
+	return record(m.next.Flush(ctx))
 }
 
 func (m *middlewareStats) GlobalCheck(tx types.Tx, res *abci.ResponseCheckTx) (OpResult, error) {
-	return m.next.GlobalCheck(tx, res)
+	record := m.globalCheckRED.Incr()
+	opRes, err := m.next.GlobalCheck(tx, res)
+	record(err)
+	return opRes, err
 }
 
 func (m *middlewareStats) HydrateBlockData(ctx context.Context, block *types.Block) (types.Data, error) {
 	ctx = withObservations(ctx)
-	defer m.observeOp(ctx, "HydrateBlockData",
+	record := m.observe(ctx, m.hydrateBlockRED, "HydrateBlockData",
 		"block_size", block.Size(),
 		"height", block.Height,
 		"num_colls", block.Collections.Count(),
 		"num_txs", len(block.Txs),
 	)
-	return m.next.HydrateBlockData(ctx, block)
+	data, err := m.next.HydrateBlockData(ctx, block)
+	return data, record(err)
 }
 
 func (m *middlewareStats) Meta() PoolMeta {
@@ -65,39 +93,52 @@ func (m *middlewareStats) Meta() PoolMeta {
 
 func (m *middlewareStats) OnBlockFinality(ctx context.Context, block *types.Block, newPreFn PreCheckFunc, newPostFn PostCheckFunc) (OpResult, error) {
 	ctx = withObservations(ctx)
-	defer m.observeOp(ctx, "OnBlockFinality",
+	record := m.observe(ctx, m.hydrateBlockRED, "OnBlockFinality",
 		"block_size", block.Size(),
 		"height", block.Height,
 		"num_colls", block.Collections.Count(),
 		"num_txs", len(block.Txs),
 	)
-	return m.next.OnBlockFinality(ctx, block, newPreFn, newPostFn)
+	opRes, err := m.next.OnBlockFinality(ctx, block, newPreFn, newPostFn)
+	return opRes, record(err)
 }
 
 func (m *middlewareStats) Reap(ctx context.Context, opts ReapOption) (ReapResults, error) {
 	ctx = withObservations(ctx)
-	defer m.observeOp(ctx, "Reap",
+	record := m.observe(ctx, m.reapRED, "Reap",
 		"max_txs", opts.NumTxs,
 		"max_size", opts.BlockSizeLimit,
 		"max_gas", opts.GasLimit,
 		"verified", opts.Verify,
 	)
-	return m.next.Reap(ctx, opts)
+	res, err := m.next.Reap(ctx, opts)
+	return res, record(err)
 }
 
 func (m *middlewareStats) Recheck(ctx context.Context, appConn proxy.AppConnMempool) (OpResult, error) {
 	ctx = withObservations(ctx)
-	defer m.observeOp(ctx, "Recheck")
-	return m.next.Recheck(ctx, appConn)
+	record := m.observe(ctx, m.recheckRED, "Recheck")
+	opRes, err := m.next.Recheck(ctx, appConn)
+	return opRes, record(err)
 }
 
 func (m *middlewareStats) Remove(ctx context.Context, opts RemOption) (OpResult, error) {
 	ctx = withObservations(ctx)
-	defer m.observeOp(ctx, "Remove",
+	record := m.observe(ctx, m.removeRED, "Remove",
 		"num_collections", opts.Collections.Count(),
 		"num_tx_keys", len(opts.TxKeys),
 	)
-	return m.next.Remove(ctx, opts)
+	opRes, err := m.next.Remove(ctx, opts)
+	return opRes, record(err)
+}
+
+func (m *middlewareStats) observe(ctx context.Context, red observe.RED, op string, kvPairs ...any) func(err error) error {
+	record := red.Incr()
+	return func(err error) error {
+		record(err)
+		m.observeOp(ctx, op, kvPairs...)
+		return err
+	}
 }
 
 func (m *middlewareStats) observeOp(ctx context.Context, op string, kvPairs ...any) {

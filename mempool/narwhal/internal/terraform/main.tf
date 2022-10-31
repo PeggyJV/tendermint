@@ -81,6 +81,11 @@ resource "google_compute_instance_group_manager" "manager" {
   zone               = var.gcp_zone
   wait_for_instances = true
 
+  timeouts {
+    create = "3h"
+    delete = "3h"
+  }
+
   version {
     instance_template = google_compute_instance_template.minter_temp.id
   }
