@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strconv"
 	"time"
 
@@ -32,6 +31,7 @@ type builder struct {
 	outputDir                 string
 	batchSize                 int
 	batchDelay                time.Duration
+	chainID                   string
 	checkDur                  time.Duration
 	follow                    bool
 	followDur                 time.Duration
@@ -57,9 +57,7 @@ type builder struct {
 func (b *builder) cmd() *cobra.Command {
 	const cliName = "narwhalmint"
 	cmd := cobra.Command{
-		Use:   cliName,
-		RunE:  b.cmdRunE,
-		Short: "start a TM+narwhal cluster",
+		Use: cliName,
 	}
 	b.registerHostFlag(&cmd)
 	b.registerNarwhalConfigFlags(&cmd)
@@ -76,68 +74,6 @@ func (b *builder) cmd() *cobra.Command {
 	)
 
 	return &cmd
-}
-
-func (b *builder) cmdRunE(cmd *cobra.Command, args []string) error {
-	ctx, cancel := context.WithCancel(cmd.Context())
-	defer cancel()
-
-	startFn := b.startNew
-	if configsExists(b.outputDir) {
-		startFn = b.startFrom
-	}
-
-	err := startFn(ctx, cmd.OutOrStdout())
-	if err != nil {
-		return err
-	}
-
-	<-ctx.Done()
-	return nil
-}
-
-func (b *builder) startFrom(ctx context.Context, w io.Writer) error {
-	ltm, lnarwhal := b.newLaunchers(w)
-
-	w.Write([]byte("starting narwhal nodes from " + b.outputDir + "...\n"))
-	err := lnarwhal.StartFrom(ctx, b.outputDir)
-	if err != nil {
-		return err
-	}
-
-	w.Write([]byte("starting tendermint nodes from " + b.outputDir + "...\n"))
-	err = ltm.StartFrom(ctx, b.outputDir)
-	if err != nil {
-		return err
-	}
-	w.Write([]byte("nodes started successfully\n"))
-
-	return nil
-}
-
-func (b *builder) startNew(ctx context.Context, w io.Writer) error {
-	ltm, lnarwhal := b.newLaunchers(w)
-
-	w.Write([]byte("setting up FS...\n"))
-	err := b.setupFS(ctx, time.Time{}, ltm, lnarwhal, "", "")
-	if err != nil {
-		return err
-	}
-
-	w.Write([]byte("starting narwhal nodes...\n"))
-	err = lnarwhal.Start(ctx)
-	if err != nil {
-		return err
-	}
-
-	w.Write([]byte("starting tendermint nodes...\n"))
-	err = ltm.Start(ctx)
-	if err != nil {
-		return err
-	}
-	w.Write([]byte("nodes started successfully\n"))
-
-	return nil
 }
 
 func (b *builder) cmdConfigGen() *cobra.Command {
@@ -166,19 +102,25 @@ func (b *builder) configGenRunE(cmd *cobra.Command, _ []string) error {
 	var ips []struct {
 		ExternalIP string `json:"external_ip"`
 		InternalIP string `json:"internal_ip"`
+		Type       string `json:"node_type"`
 	}
 	err = json.Unmarshal(bb, &ips)
 	if err != nil {
 		return err
 	}
 
-	mIPs := make(map[string]string)
+	mValidatorIPs := make(map[string]string)
+	mSeedIPs := make(map[string]string)
 	for _, ip := range ips {
-		mIPs[ip.ExternalIP] = ip.InternalIP
+		m := mValidatorIPs
+		if ip.Type == "seed" {
+			m = mSeedIPs
+		}
+		m[ip.ExternalIP] = ip.InternalIP
 	}
 
 	var opts []narwhalmint.NarwhalOpt
-	for externalIP, internalIP := range mIPs {
+	for externalIP, internalIP := range mValidatorIPs {
 		opt := narwhalmint.NarwhalOpt{
 			NodeName: internalIP,
 			PrimHost: externalIP,
@@ -205,7 +147,12 @@ func (b *builder) configGenRunE(cmd *cobra.Command, _ []string) error {
 		opts = append(opts, opt)
 	}
 
-	ltm, lnarwhal := b.newLaunchers(cmd.OutOrStdout())
+	var seedIPs []string
+	for extIP := range mSeedIPs {
+		seedIPs = append(seedIPs, extIP)
+	}
+
+	ltm, lnarwhal := b.newLaunchers(cmd.OutOrStdout(), seedIPs)
 	err = b.setupFS(cmd.Context(), time.Time{}, ltm, lnarwhal, b.p2pPort, b.rpcPort, opts...)
 	if err != nil {
 		return err
@@ -216,7 +163,13 @@ func (b *builder) configGenRunE(cmd *cobra.Command, _ []string) error {
 		host := opt.PrimHost
 		renameOpts = append(renameOpts, narwhalmint.RenameOpt{
 			ExternalIP: host,
-			Name:       mIPs[host],
+			Name:       mValidatorIPs[host],
+		})
+	}
+	for extIP, intIP := range mSeedIPs {
+		renameOpts = append(renameOpts, narwhalmint.RenameOpt{
+			ExternalIP: extIP,
+			Name:       intIP,
 		})
 	}
 
@@ -224,10 +177,26 @@ func (b *builder) configGenRunE(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	return ltm.RenameDirs(renameOpts...)
+
+	err = ltm.RenameDirs(renameOpts...)
+	if err != nil {
+		return err
+	}
+
+	enc := json.NewEncoder(cmd.OutOrStdout())
+	enc.SetIndent("", "  ")
+	return enc.Encode(struct {
+		ChainID    string            `json:"chain_id"`
+		Validators map[string]string `json:"validators"`
+		Seeds      map[string]string `json:"seeds"`
+	}{
+		ChainID:    ltm.ChainID(),
+		Validators: mValidatorIPs,
+		Seeds:      mSeedIPs,
+	})
 }
 
-func (b *builder) newLaunchers(out io.Writer) (*narwhalmint.LauncherTendermint, *narwhalmint.LauncherNarwhal) {
+func (b *builder) newLaunchers(out io.Writer, seedIPs []string) (*narwhalmint.LauncherTendermint, *narwhalmint.LauncherNarwhal) {
 	lnarwhal := narwhalmint.LauncherNarwhal{
 		BatchSize:   b.batchSize,
 		BatchDelay:  b.batchDelay,
@@ -248,6 +217,7 @@ func (b *builder) newLaunchers(out io.Writer) (*narwhalmint.LauncherTendermint, 
 		ProxyAppType: b.proxyApp,
 		ReapDuration: b.reapDur,
 		Out:          out,
+		SeedIPs:      seedIPs,
 	}
 	if b.tmMetricsPort >= 0 {
 		ltm.MetricsPort = fmt.Sprintf(":%d", b.tmMetricsPort)
@@ -307,20 +277,4 @@ func (b *builder) registerTMMetricsPort(cmd *cobra.Command) {
 func (b *builder) registerNarwhalMetricsPort(cmd *cobra.Command) {
 	cmd.Flags().IntVar(&b.narwhalPrimaryMetricsPort, "narwhal-primary-metrics-port", -1, "port to scrape narwhal metrics")
 	cmd.Flags().IntVar(&b.narwhalWorkerMetricsPort, "narwhal-worker-metrics-port", -1, "port to scrape narwhal metrics")
-}
-
-func configsExists(root string) bool {
-	dirs := []string{
-		root,
-		filepath.Join(root, "tendermint"),
-		filepath.Join(root, "narwhal"),
-	}
-	for _, dir := range dirs {
-		stat, err := os.Stat(dir)
-		if err != nil || !stat.IsDir() {
-			return false
-		}
-	}
-
-	return true
 }

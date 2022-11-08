@@ -25,7 +25,6 @@ resource "google_compute_instance_template" "minter_temp" {
     environment = "dev"
   }
 
-  instance_description = "description assigned to instances"
   machine_type         = var.machine_type
   can_ip_forward       = false
 
@@ -91,6 +90,72 @@ resource "google_compute_instance_group_manager" "manager" {
   }
 }
 
+resource "google_compute_instance_template" "minter_seed_temp" {
+  name        = "${var.template_name}-seed"
+  description = "Template for creating boxes to be used as seeds in narwhal testing."
+
+  tags = ["narwhalmint"]
+
+  labels = {
+    environment = "dev"
+  }
+
+  machine_type         = "e2-small"
+  can_ip_forward       = false
+
+  scheduling {
+    preemptible         = false
+    automatic_restart   = true
+    on_host_maintenance = "MIGRATE"
+  }
+
+  // Create a new boot disk from an image
+  disk {
+    source_image = "debian-cloud/debian-11"
+    auto_delete  = true
+    boot         = true
+  }
+
+  network_interface {
+    network = "narwhalmintwork"
+    access_config {
+      nat_ip = ""
+    }
+  }
+
+  metadata = {
+    grouping = var.group
+  }
+
+  metadata_startup_script = <<EOT
+    apt update -qq
+    apt-get -y --no-install-recommends install zip unzip
+
+    gsutil cp gs://narwhalmint/start.sh /usr/local/lib/start.sh
+    gsutil cp gs://narwhalmint/start_seeds.sh  /usr/local/lib/start_services.sh
+
+    gsutil cp gs://narwhalmint/tendermint.zip /usr/bin/tendermint.zip
+    unzip -q -d /usr/bin /usr/bin/tendermint.zip && rm /usr/bin/tendermint.zip
+
+    export BASHRC=/etc/bash.bashrc
+    echo 'export IP="$(hostname -i)"' >> "$BASHRC"
+    echo 'export TMHOME="/usr/local/lib/tendermint/nodes/$IP"' >> "$BASHRC"
+  EOT
+}
+
+resource "google_compute_instance_group_manager" "seeders" {
+  name               = "${var.group_name}-seeds"
+  base_instance_name = "narwhalmint"
+  target_size        = 2
+  zone               = var.gcp_zone
+  wait_for_instances = true
+
+  version {
+    instance_template = google_compute_instance_template.minter_seed_temp.id
+  }
+}
+
+
 output "group_name" {
   depends_on = [google_compute_instance_group_manager.manager]
   value      = google_compute_instance_group_manager.manager.name
@@ -99,4 +164,9 @@ output "group_name" {
 output "group_size" {
   depends_on = [google_compute_instance_group_manager.manager]
   value      = google_compute_instance_group_manager.manager.target_size
+}
+
+output "seeds" {
+  depends_on = [google_compute_instance_group_manager.seeders]
+  value = google_compute_instance_group_manager.seeders.name
 }

@@ -10,5 +10,4 @@ else
 	printf "using existing configs for tendermint and narwhal\\n"
 fi
 
-source start_services.sh
-start_tendermint && start_narwhal_primary && start_narwhal_worker
+source start_services.sh && start

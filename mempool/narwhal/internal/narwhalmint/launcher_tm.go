@@ -47,13 +47,20 @@ type LauncherTendermint struct {
 	ProxyAppType          string
 	ReapDuration          time.Duration
 	RunValidatorInProcess bool
+	SeedIPs               []string
 
+	chainID          string
 	mNodeCFGs        map[string]*config.Config
-	mPersistentPeers map[string]string
+	mNodePeers       map[string]string
+	mSeedPeers       map[string]string
 	clients          []*TMClient
 	dirs             testDirs
 	portFactory      *portFactory
 	runtimeErrStream <-chan error
+}
+
+func (l *LauncherTendermint) ChainID() string {
+	return l.chainID
 }
 
 func (l *LauncherTendermint) Dir() string {
@@ -76,6 +83,7 @@ type (
 		RPCPort      string
 		ReapDuration time.Duration
 		NarwhalCFG   *config.NarwhalMempoolConfig
+		Seed         bool
 	}
 
 	RenameOpt struct {
@@ -94,9 +102,8 @@ func (l *LauncherTendermint) RenameDirs(opts ...RenameOpt) error {
 	}
 
 	for _, nodeName := range l.dirs.nodeNames {
-		primHostPort := strings.Split(l.mPersistentPeers[nodeName], "@")[1]
+		primHostPort := strings.Split(l.mNodePeers[nodeName], "@")[1]
 		primHost := strings.Split(primHostPort, ":")[0]
-
 		newName, ok := mRename[primHost]
 		if !ok {
 			continue
@@ -180,6 +187,9 @@ func (l *LauncherTendermint) Start(ctx context.Context) error {
 
 	var clients []*TMClient
 	for nodeName, cfg := range l.mNodeCFGs {
+		if cfg.P2P.SeedMode {
+			continue
+		}
 		tmHTTP, err := newTMHTTP(cfg.RPC.ListenAddress)
 		if err != nil {
 			return err
@@ -296,6 +306,7 @@ type tmNode struct {
 	id       int
 	name     string
 	rpc, p2p string
+	seed     bool
 }
 
 func (l *LauncherTendermint) setupTMFS(cfg *config.Config, now time.Time, opts []TMOpts) (nodes []string, e error) {
@@ -304,60 +315,26 @@ func (l *LauncherTendermint) setupTMFS(cfg *config.Config, now time.Time, opts [
 		mNodes  = make([]tmNode, len(opts))
 	)
 	for i, opt := range opts {
-		nodeName := opt.NodeName
-		if nodeName == "" {
-			nodeName = fmt.Sprintf("%s%d", tmNodeDirPrefix, i)
-		}
-		nodeDir := l.dirs.nodeDir(nodeName)
-		cfg.SetRoot(nodeDir)
-
-		randoPorts, err := l.portFactory.newRandomPorts(2)
+		tmn, genVal, err := l.newNodeGenesisValidator(cfg, opt, i)
 		if err != nil {
 			return nil, err
 		}
-
-		tmn := tmNode{
-			id:   i,
-			name: nodeName,
-			rpc:  opt.RPCPort,
-			p2p:  opt.P2PPort,
-		}
-		if tmn.rpc == "" {
-			tmn.rpc = randoPorts[0]
-		}
-		if tmn.p2p == "" {
-			tmn.p2p = randoPorts[1]
-		}
-		mNodes[i] = tmn
-
-		err = createDirs(
-			l.dirs.configDir(nodeName),
-			l.dirs.dataDir(nodeName),
-			l.dirs.nodeLogDir(nodeName),
-		)
+		mNodes[i], genVals[i] = tmn, genVal
+	}
+	var (
+		seedNodes = make([]tmNode, len(l.SeedIPs))
+		seedOpts  = make([]TMOpts, len(l.SeedIPs))
+	)
+	for i := range l.SeedIPs {
+		seedIP := l.SeedIPs[i]
+		opt := opts[i]
+		opt.NodeName = fmt.Sprintf("seed_%d", i)
+		opt.Host, opt.Seed, opt.NarwhalCFG = seedIP, true, nil
+		tmn, _, err := l.newNodeGenesisValidator(cfg, opt, i)
 		if err != nil {
 			return nil, err
 		}
-
-		err = initFilesWithConfig(cfg)
-		if err != nil {
-			return nil, err
-		}
-
-		pvKeyFile := filepath.Join(nodeDir, cfg.BaseConfig.PrivValidatorKey)
-		pvStateFile := filepath.Join(nodeDir, cfg.BaseConfig.PrivValidatorState)
-		pv := privval.LoadFilePV(pvKeyFile, pvStateFile)
-
-		pubKey, err := pv.GetPubKey()
-		if err != nil {
-			return nil, fmt.Errorf("can't get pubkey: %w", err)
-		}
-		genVals[i] = types.GenesisValidator{
-			Address: pubKey.Address(),
-			PubKey:  pubKey,
-			Power:   1,
-			Name:    nodeName,
-		}
+		seedNodes[i], seedOpts[i] = tmn, opt
 	}
 
 	// Generate genesis doc from generated validators
@@ -368,15 +345,27 @@ func (l *LauncherTendermint) setupTMFS(cfg *config.Config, now time.Time, opts [
 		Validators:      genVals,
 	}
 
-	mPersistentPeers, err := persistentPeersString(cfg, l.dirs, l.Host, mNodes, opts)
+	mNodePeers, err := seedsString(cfg, l.dirs, l.Host, mNodes, opts)
 	if err != nil {
 		return nil, err
 	}
-	l.mPersistentPeers = mPersistentPeers
 
-	persistentPeerFn := func(nodeName string) string {
+	mSeeds := mNodePeers
+	if len(seedNodes) > 0 {
+		mSeeds, err = seedsString(cfg, l.dirs, l.Host, seedNodes, seedOpts)
+		if err != nil {
+			return nil, err
+		}
+		for nodeName, id := range mSeeds {
+			mNodePeers[nodeName] = id
+		}
+	}
+	l.mNodePeers = mNodePeers
+	l.mSeedPeers = mSeeds
+
+	seedPeerFn := func(nodeName string) string {
 		var out []string
-		for name, peerStr := range mPersistentPeers {
+		for name, peerStr := range mSeeds {
 			if name == nodeName {
 				continue
 			}
@@ -385,52 +374,132 @@ func (l *LauncherTendermint) setupTMFS(cfg *config.Config, now time.Time, opts [
 		return strings.Join(out, ",")
 	}
 
-	newListenAddr := func(host, port string) string {
-		if host == "" {
-			return ""
-		}
-		return "tcp://" + net.JoinHostPort(host, port)
-	}
-
 	var (
 		mNodeCFGs = make(map[string]*config.Config)
 		nodeNames []string
 	)
 	// Overwrite default cfg.
 	for _, node := range mNodes {
-		opt := opts[node.id]
-		narwhalCFG := opt.NarwhalCFG
-		cfg.SetRoot(l.dirs.nodeDir(node.name))
-
-		if err := genDoc.SaveAs(cfg.GenesisFile()); err != nil {
-			return nil, fmt.Errorf("failed to save genesis doc: %w", err)
+		cfg, err := l.newNodeCFG(cfg, genDoc, node, opts[node.id], seedPeerFn(node.name))
+		if err != nil {
+			return nil, err
 		}
-		cfg.Consensus.ConsensusStrategy = "meta_only"
-		waitDur := l.ReapDuration
-		if opt.ReapDuration > 0 {
-			waitDur = opt.ReapDuration
+		nodeNames = append(nodeNames, node.name)
+		mNodeCFGs[node.name] = copyCFG(cfg)
+	}
+	for _, node := range seedNodes {
+		cfg, err := l.newNodeCFG(cfg, genDoc, node, seedOpts[node.id], seedPeerFn(node.name))
+		if err != nil {
+			return nil, err
 		}
-		if l.MetricsPort != "" {
-			cfg.Instrumentation.Prometheus = true
-			cfg.Instrumentation.PrometheusListenAddr = l.MetricsPort
-		}
-		cfg.LogFormat = l.LogFmt
-		cfg.LogLevel = l.LogLevel
-		cfg.Mempool.ReapWaitDur = waitDur
-		cfg.Narwhal = narwhalCFG
-		cfg.RPC.ListenAddress = newListenAddr(l.Host, node.rpc)
-		cfg.P2P.ListenAddress = newListenAddr(l.Host, node.p2p)
-		cfg.P2P.AddrBookStrict = false
-		cfg.P2P.AllowDuplicateIP = true
-		cfg.P2P.Seeds = persistentPeerFn(node.name)
-		cfg.Moniker = moniker()
-		config.WriteConfigFile(l.dirs.configFile(node.name), cfg)
 		nodeNames = append(nodeNames, node.name)
 		mNodeCFGs[node.name] = copyCFG(cfg)
 	}
 	l.mNodeCFGs = mNodeCFGs
+	l.chainID = genDoc.ChainID
 
 	return nodeNames, nil
+}
+
+func (l *LauncherTendermint) newNodeGenesisValidator(cfg *config.Config, opt TMOpts, i int) (tmNode, types.GenesisValidator, error) {
+	nodeName := opt.NodeName
+	if nodeName == "" {
+		nodeName = fmt.Sprintf("%s%d", tmNodeDirPrefix, i)
+	}
+	nodeDir := l.dirs.nodeDir(nodeName)
+	cfg.SetRoot(nodeDir)
+
+	randoPorts, err := l.portFactory.newRandomPorts(2)
+	if err != nil {
+		return tmNode{}, types.GenesisValidator{}, err
+	}
+
+	tmn := tmNode{
+		id:   i,
+		name: nodeName,
+		rpc:  opt.RPCPort,
+		p2p:  opt.P2PPort,
+	}
+	if tmn.rpc == "" {
+		tmn.rpc = randoPorts[0]
+	}
+	if tmn.p2p == "" {
+		tmn.p2p = randoPorts[1]
+	}
+
+	err = createDirs(
+		l.dirs.configDir(nodeName),
+		l.dirs.dataDir(nodeName),
+		l.dirs.nodeLogDir(nodeName),
+	)
+	if err != nil {
+		return tmNode{}, types.GenesisValidator{}, err
+	}
+
+	err = initFilesWithConfig(cfg)
+	if err != nil {
+		return tmNode{}, types.GenesisValidator{}, err
+	}
+
+	pvKeyFile := filepath.Join(nodeDir, cfg.BaseConfig.PrivValidatorKey)
+	pvStateFile := filepath.Join(nodeDir, cfg.BaseConfig.PrivValidatorState)
+	pv := privval.LoadFilePV(pvKeyFile, pvStateFile)
+
+	pubKey, err := pv.GetPubKey()
+	if err != nil {
+		return tmNode{}, types.GenesisValidator{}, fmt.Errorf("can't get pubkey: %w", err)
+	}
+
+	genVals := types.GenesisValidator{
+		Address: pubKey.Address(),
+		PubKey:  pubKey,
+		Power:   1,
+		Name:    nodeName,
+	}
+
+	return tmn, genVals, nil
+}
+
+func (l *LauncherTendermint) newNodeCFG(cfg *config.Config, genDoc *types.GenesisDoc, node tmNode, opt TMOpts, seeds string) (*config.Config, error) {
+	narwhalCFG := opt.NarwhalCFG
+	cfg.SetRoot(l.dirs.nodeDir(node.name))
+
+	if genDoc != nil {
+		if err := genDoc.SaveAs(cfg.GenesisFile()); err != nil {
+			return nil, fmt.Errorf("failed to save genesis doc: %w", err)
+		}
+	}
+	cfg.Consensus.ConsensusStrategy = "meta_only"
+	waitDur := l.ReapDuration
+	if opt.ReapDuration > 0 {
+		waitDur = opt.ReapDuration
+	}
+	if l.MetricsPort != "" {
+		cfg.Instrumentation.Prometheus = true
+		cfg.Instrumentation.PrometheusListenAddr = l.MetricsPort
+	}
+	cfg.LogFormat = l.LogFmt
+	cfg.LogLevel = l.LogLevel
+	cfg.Mempool.ReapWaitDur = waitDur
+	cfg.Narwhal = narwhalCFG
+
+	newListenAddr := func(host, port string) string {
+		if host == "" {
+			return ""
+		}
+		return "tcp://" + net.JoinHostPort(host, port)
+	}
+	cfg.RPC.ListenAddress = newListenAddr(l.Host, node.rpc)
+	cfg.P2P.ListenAddress = newListenAddr(l.Host, node.p2p)
+	cfg.P2P.SeedMode = opt.Seed
+	cfg.P2P.AddrBookStrict = false
+	cfg.P2P.AllowDuplicateIP = true
+	cfg.P2P.Seeds = seeds
+	cfg.Moniker = moniker()
+
+	config.WriteConfigFile(l.dirs.configFile(node.name), cfg)
+
+	return copyCFG(cfg), nil
 }
 
 func (l *LauncherTendermint) setDefaults() {
@@ -483,7 +552,7 @@ func initFilesWithConfig(cfg *config.Config) error {
 	return nil
 }
 
-func persistentPeersString(cfg *config.Config, dirs testDirs, host string, nodes []tmNode, opts []TMOpts) (map[string]string, error) {
+func seedsString(cfg *config.Config, dirs testDirs, host string, nodes []tmNode, opts []TMOpts) (map[string]string, error) {
 	persistentPeers := make(map[string]string, len(nodes))
 	for _, node := range nodes {
 		var opt TMOpts

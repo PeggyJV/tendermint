@@ -1,3 +1,7 @@
+function start() {
+	start_tendermint && start_narwhal_primary && start_narwhal_worker
+}
+
 function start_tendermint() {
 	set -o errtrace
 
