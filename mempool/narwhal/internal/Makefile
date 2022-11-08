@@ -8,7 +8,7 @@ TS := $(shell date +"%m-%d_%T")
 PWD := $(shell pwd)
 REMOTE_HOME_DIR := /home/jwberged
 TMP :=$(shell mktemp -d)
-TESTNET_CONFIG_DIR ?= demo/testnet_configs
+TESTNET_RUN_FILE ?= demo/testnet_configs/larger_nets/concur_01_size022.json
 export DIR ?= demo/${TS}
 export TESTNET_CONFIG_FILE ?= $(DIR)/testnet_config.json
 export DEPLOY_ARGS ?=
@@ -113,7 +113,6 @@ mk_observe_dir:
 	@mkdir -p demo/_observability/grafana/datasource && mkdir -p demo/_observability/prom
 .PHONY: mk_observe_dir
 
-demo: DIR :=demo/$(shell date +"%m-%d_%T")
 demo: run_new_instances
 	echo "waiting $(WAIT_DUR)s for nodes to be ready" && \
 	sleep $(WAIT_DUR) && \
@@ -128,17 +127,14 @@ demo_confirmed: DESTROY_ARGS=-auto-approve
 demo_confirmed: demo
 .PHONY: demo_confirmed
 
-run_testnet_configs:
-	@for filename in $$(ls $(TESTNET_CONFIG_DIR) | grep '.json') ; do \
-		export tmp=$$(cat $(TESTNET_CONFIG_DIR)/$$filename) ; \
-		echo "\\ntestnet config to be executed: $$(echo $$tmp | jq -c)\\n" && \
-		MAKE demo_confirmed \
-			DIR:=$(DIR) \
-			LOAD_ARGS="$$(echo $$tmp | jq -r '.load_args')" \
-			DEPLOY_ARGS="$$(echo $$tmp | jq -r '.deploy_args // ""')" \
-			FOLLOW_DUR="$$(echo $$tmp | jq -r '.follow_dur // "10m"')" ; \
-	done
-.PHONY: run_testnet_configs
+run_testnet_config:
+	@export tmp=$$(cat $(TESTNET_RUN_FILE)) ; \
+	echo "\\ntestnet config to be executed: $$(echo $$tmp | jq -c)\\n" && \
+	MAKE demo_confirmed \
+		LOAD_ARGS="$$(echo $$tmp | jq -r '.load_args')" \
+		DEPLOY_ARGS="$$(echo $$tmp | jq -r '.deploy_args // ""')" \
+		FOLLOW_DUR="$$(echo $$tmp | jq -r '.follow_dur // "10m"')"
+.PHONY: run_testnet_config
 
 load-test: build_narwhalmint
 	@MAKE instance_ext_ips | narwhalmint load $(LOAD_ARGS)

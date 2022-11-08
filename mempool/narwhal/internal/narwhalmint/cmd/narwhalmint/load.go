@@ -277,12 +277,13 @@ func (r *tmClientRunner) submitTMTxs(ctx context.Context, cl *narwhalmint.TMClie
 	st := r.clientRunStats(cl.NodeName)
 	bar := r.progress.AddBar(maxTxs).
 		AppendFunc(func(b *uiprogress.Bar) string {
-			lbh, _ := r.clientLBH(cl.NodeName)
+			lbh, lbt := r.clientLBH(cl.NodeName)
 			peers := r.clientPeers(cl.NodeName)
-			return fmt.Sprintf("%s %s lbh(%05d) peers(%02d) errs(%d)",
+			return fmt.Sprintf("%s %s lbh(%05d) lbt(%s) peers(%02d) errs(%d)",
 				b.CompletedPercentString(),
 				b.TimeElapsedString(),
 				lbh,
+				lbtTimestamp(lbt),
 				peers,
 				st.totalErrs(),
 			)

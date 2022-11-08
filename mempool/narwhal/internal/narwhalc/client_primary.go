@@ -194,7 +194,7 @@ func nextBlockCollections(ctx context.Context, in nextBlockIn) (causalCollection
 	prep := &blockPrep{
 		blockGasLimit:  in.opts.BlockSizeLimit,
 		blockTXsLimit:  int64(in.opts.NumTxs),
-		blockCollLimit: 30,
+		blockCollLimit: 100,
 		logger:         in.logger,
 		publicKey: narwhalproto.PublicKey{
 			Bytes: in.publicKey,

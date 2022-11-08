@@ -148,12 +148,8 @@ func (b *builder) newProgressBars(w io.Writer, r *tmClientRunner) (func(), func(
 			AppendFunc(func(b *uiprogress.Bar) string {
 				lbh, lbt := r.clientLBH(cl.NodeName)
 				peers := r.clientPeers(cl.NodeName)
-				var ts string
-				if lbt.After(time.Now().Add(-20 * year)) {
-					ts = lbt.Local().Format(time.Kitchen)
-				}
 				elapsed := strutil.PadLeft(b.TimeElapsedString(), 5, ' ')
-				return fmt.Sprintf("%s %s lbh(%05d) lbt(%s) peers(%02d)", completeFn(b), elapsed, lbh, ts, peers)
+				return fmt.Sprintf("%s %s lbh(%05d) lbt(%s) peers(%02d)", completeFn(b), elapsed, lbh, lbtTimestamp(lbt), peers)
 			}).
 			PrependFunc(func(b *uiprogress.Bar) string {
 				return "\t" + strutil.Resize("node "+name, 20)
@@ -185,4 +181,12 @@ func newStopTimer(dur time.Duration) <-chan time.Time {
 		return nil
 	}
 	return time.After(dur)
+}
+
+func lbtTimestamp(t time.Time) string {
+	var ts string
+	if t.After(time.Now().Add(-20 * year)) {
+		ts = t.Local().Format(time.Kitchen)
+	}
+	return ts
 }
