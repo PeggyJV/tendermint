@@ -10,6 +10,14 @@ services:
     volumes:
       - ./demo/_observability/prom/prometheus.yml:/etc/prometheus/prometheus.yml
       - ./demo/_observability/prom:/prometheus
+  pushgateway:
+    image: prom/pushgateway
+    container_name: pushgateway
+    restart: unless-stopped
+    expose:
+      - 9091
+    ports:
+      - "9091:9091"
   grafana:
     image: grafana/grafana
     container_name: grafana

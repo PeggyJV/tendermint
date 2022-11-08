@@ -14,7 +14,7 @@ export TESTNET_CONFIG_FILE ?= $(DIR)/testnet_config.json
 export DEPLOY_ARGS ?=
 export DESTROY_ARGS ?=
 export LOAD_ARGS ?= --concurrency 1 --txs 10000
-export SETUP_DUR ?= 90
+export SETUP_DUR ?= 120
 export WAIT_DUR ?= 30
 export FOLLOW_DUR ?= 5m
 FOLLOW_ARGS ?= --for $(FOLLOW_DUR)
@@ -133,6 +133,7 @@ run_testnet_configs:
 		export tmp=$$(cat $(TESTNET_CONFIG_DIR)/$$filename) ; \
 		echo "\\ntestnet config to be executed: $$(echo $$tmp | jq -c)\\n" && \
 		MAKE demo_confirmed \
+			DIR:=$(DIR) \
 			LOAD_ARGS="$$(echo $$tmp | jq -r '.load_args')" \
 			DEPLOY_ARGS="$$(echo $$tmp | jq -r '.deploy_args // ""')" \
 			FOLLOW_DUR="$$(echo $$tmp | jq -r '.follow_dur // "10m"')" ; \

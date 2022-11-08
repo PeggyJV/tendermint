@@ -63,6 +63,14 @@ scrape_configs:
     static_configs:
       - targets:
           - localhost:9090
+  - job_name: prompush
+    honor_timestamps: true
+    scrape_interval: 1s
+    metrics_path: /metrics
+    scheme: http
+    static_configs:
+      - targets:
+          - pushgateway:9091
   - job_name: tendermint
     honor_timestamps: true
     scrape_interval: 5s

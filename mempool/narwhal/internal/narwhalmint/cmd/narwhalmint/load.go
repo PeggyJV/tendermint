@@ -6,12 +6,15 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/gosuri/uiprogress"
 	"github.com/gosuri/uiprogress/util/strutil"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/push"
 	"github.com/spf13/cobra"
 
 	"github.com/tendermint/tendermint/mempool/narwhal/internal/narwhalmint"
@@ -34,6 +37,8 @@ echo '["35.223.226.153", ...OTHER_IPS]' |  narwhalmint load
 	}
 	cmd.Flags().IntVar(&b.maxConcurrency, "concurrency", 1, "maximum client concurrency (i.e. max concurrent load on a single node)")
 	cmd.Flags().IntVar(&b.maxTxs, "txs", 1<<10, "maximum number of total txs to be sent; is split evenly between nodes")
+	cmd.Flags().StringVar(&b.chainID, "chain-id", "", "chain id of the chain under load")
+	cobra.MarkFlagRequired(cmd.Flags(), "chain-id")
 
 	return &cmd
 }
@@ -52,6 +57,12 @@ func (b *builder) loadRunE(cmd *cobra.Command, args []string) error {
 	runner := newTMClientRunner(cmd.ErrOrStderr(), clients, b.maxTxs, b.maxConcurrency)
 	runner.println(fmt.Sprintf("submitting client Txs: max_txs=%d max_concurrent=%d txs/client: %d", runner.maxTxs, runner.maxConcurrent, runner.totalTxsPerClient))
 
+	pusher, err := b.pushLoadMetrics(len(clients), runner.totalTxsPerClient)
+	if err != nil {
+		fmt.Fprintln(cmd.ErrOrStderr(), "failed to push load metrics: "+err.Error())
+	}
+	defer pusher.Delete()
+
 	ctx := cmd.Context()
 	select {
 	case <-ctx.Done():
@@ -59,6 +70,26 @@ func (b *builder) loadRunE(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
+}
+
+func (b *builder) pushLoadMetrics(numClients, maxTxsPerClient int) (*push.Pusher, error) {
+	gauge := prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: "observability",
+		Subsystem: "loadtest",
+		Name:      "clients",
+		ConstLabels: prometheus.Labels{
+			"chain_id":               b.chainID,
+			"max_client_concurrency": strconv.Itoa(b.maxConcurrency),
+			"max_client_txs":         strconv.Itoa(maxTxsPerClient),
+			"max_txs":                strconv.Itoa(b.maxTxs),
+		},
+	})
+	gauge.Set(float64(numClients))
+
+	pusher := push.New("localhost:9091", "prompush").
+		Collector(gauge)
+
+	return pusher, pusher.Push()
 }
 
 type clientMsg struct {
