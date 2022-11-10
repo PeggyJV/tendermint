@@ -62,7 +62,7 @@ resource "google_compute_instance_template" "minter_temp" {
     gsutil cp gs://narwhalmint/tendermint.zip /usr/bin/tendermint.zip
     unzip -q -d /usr/bin /usr/bin/tendermint.zip && rm /usr/bin/tendermint.zip
 
-    gsutil cp gs://narwhalmint/narwhal_node.zip /usr/bin/narwhal_node.zip
+    gsutil cp gs://narwhalmint/${var.narwhal_binary} /usr/bin/narwhal_node.zip
     unzip -q -d /usr/bin /usr/bin/narwhal_node.zip && rm /usr/bin/narwhal_node.zip
 
     export BASHRC=/etc/bash.bashrc

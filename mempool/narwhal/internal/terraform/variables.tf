@@ -14,26 +14,31 @@ variable "gcp_zone" {
 }
 
 variable "template_name" {
-  type = string
+  type    = string
   default = "narwhalmintempl"
 }
 
 variable "group" {
-  type = string
+  type    = string
   default = "default"
 }
 
 variable "group_name" {
-  type = string
+  type    = string
   default = "minters"
 }
 
 variable "group_target_size" {
-  type = string
+  type    = string
   default = "4"
 }
 
 variable "machine_type" {
-  type = string
+  type    = string
   default = "e2-standard-8"
+}
+
+variable "narwhal_binary" {
+  type    = string
+  default = "narwhal_node.zip"
 }

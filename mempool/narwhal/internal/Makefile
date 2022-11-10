@@ -15,14 +15,12 @@ export DEPLOY_ARGS ?=
 export DESTROY_ARGS ?=
 export LOAD_ARGS ?= --concurrency 1 --txs 10000
 export SETUP_DUR ?= 120
-export WAIT_DUR ?= 30
+export WAIT_DUR ?= 120
 export FOLLOW_DUR ?= 5m
 FOLLOW_ARGS ?= --for $(FOLLOW_DUR)
 export STAT_ARGS ?= --json
 export METRIC_ARGS ?= --tm-metrics-port 26660 --narwhal-primary-metrics-port 54194 --narwhal-worker-metrics-port 54195
 export SETUP_ARGS ?= --log-format "json" $(METRIC_ARGS)
-SSH_ARGS :=-o ConnectTimeout=300 -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
-ZIP_EXCLUDE_ARGS :=-x "narwhal/nodes/*/dbs/*" -x "tendermint/nodes/*/data/*" -x "start.sh" -x "start_services.sh"
 
 all: demo_confirmed
 .PHONY: all
@@ -78,11 +76,8 @@ setup_gce_instances: build_narwhalmint mk_test_dir
         zip -q -r "$$ZIP_FILE" ./* && \
         gsutil cp "$$ZIP_FILE"  "gs://narwhalmint/$$ZIP_FILE" && \
         rm -rf $(TMP) && \
-        cd $(PWD) && \
-    for ip in $$(MAKE cluster_ext_ips | jq -r '.[]'); do \
-    	echo "\\nstarting $$ip TM and narwhal nodes..." && \
-    	ssh -q $(SSH_ARGS) "jwberged@$$ip" "sudo bash /usr/local/lib/start.sh $$ZIP_FILE" ; \
-    done
+        cd $(PWD); \
+	MAKE cluster_ext_ips | ZIP="$$ZIP_FILE" ./start_instances.sh
 .PHONY: setup_gce_instances
 
 run_new_instances: deploy_gce_instances
@@ -149,7 +144,7 @@ node-stats: build_narwhalmint
 .PHONY: node-stats
 
 write_args_to_dir:
-	@MAKE instance_ipset | \
+	@MAKE cluster_ipsets | \
 		jq '{ "ipset": ., "load": "$(LOAD_ARGS)", "deploy": "$(DEPLOY_ARGS)", "follow": "$(FOLLOW_ARGS)" }' > $(DIR)/testrun_args.json
 .PHONY: write_args_to_dir
 
@@ -160,32 +155,14 @@ upload_instance_files:
 .PHONY: upload_instance_files
 
 kill_validator_processes:
-	@ for ip in $$(MAKE cluster_ext_ips | jq -r '.[]') ; do \
-		ssh -q $(SSH_ARGS) jwberged@$$ip "sudo pkill -9 tendermint && echo \"$$ip tendermint process terminated\" || true" ; \
-		ssh -q $(SSH_ARGS) jwberged@$$ip "sudo pkill -9 narwhal_node && echo \"$$ip narwhal_node processes terminated\" || true" ; \
-	done
+	@MAKE cluster_ext_ips | ./kill_instances.sh
 .PHONY: kill_validator_processes
 
 zip_logs: build_narwhalmint mk_test_dir
 	@MAKE node-stats | jq > "$(DIR)/summary.json" && echo "added $(DIR)/summary.json successfully\\n" && \
 	echo "killing validator processes" && MAKE kill_validator_processes && \
 	echo "all processes terminated...\\n" && \
-	for ipset in $$(MAKE cluster_ipsets | jq -c '.[]') ; do \
-		export ip="$$(echo $$ipset | jq -r '.external_ip')" ; \
-		echo "zipping config and logs for $$ip (perm denied issues expected)..." && \
-		ssh -q $(SSH_ARGS) jwberged@$$ip \
-			'IP=$$(hostname -i) rm -f $(REMOTE_HOME_DIR)/output.zip && cd /usr/local/lib && zip "$(REMOTE_HOME_DIR)/output.zip" -q -r . -x "python3.9/*" $(ZIP_EXCLUDE_ARGS) narwhal/*.json "narwhal/nodes/$$IP" "tendermint/nodes/$$IP"' ; \
-		echo "copying output.zip from $$ip to $(DIR)/$$ip.zip" && \
-		scp -q $(SSH_ARGS) jwberged@$$ip:'$(REMOTE_HOME_DIR)/output.zip' "$(DIR)/$$ip.zip" && \
-		echo "unzipping $(DIR)/$$ip.zip in $(DIR)" && \
-		unzip -q -n -d $(DIR) $(DIR)/$$ip.zip && rm $(DIR)/$$ip.zip ; \
-		export log_dir="$(DIR)/tendermint/nodes/$$(echo $$ipset | jq -r '.internal_ip')/logs" ; \
-		echo "creating trimmed consensus and mempool logs file at $$log_dir" && \
-		cat "$$log_dir/log.jsonl" | \
-		 jq -c '. | select(.module == "consensus" or .module == "mempool") | select(._msg != "Receive")' > \
-			"$$log_dir/logs_consensuspool.jsonl" ; \
-		echo "$$ip node zipped successfully\\n" ; \
-	done && \
+	MAKE cluster_ipsets | DIR=$(DIR) REMOTE_DIR=$(REMOTE_HOME_DIR) ./zip_instances.sh && \
 	export final_dir="$(DIR).$$(make instance_group).height_$$(cat $(DIR)/summary.json | jq -r  '.node_status[0].status.sync_info.latest_block_height ?')" ; \
 	mv $(DIR) $$final_dir && echo "all unzipped data located at $$final_dir"
 .PHONY: zip_logs

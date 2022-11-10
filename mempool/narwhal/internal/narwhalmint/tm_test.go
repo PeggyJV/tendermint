@@ -105,7 +105,7 @@ func Test_TM_Narwhal(t *testing.T) {
 	t.Log(nowTS(), "submitting client Txs: max_txs=", runner.maxTxs, " max_concurrent=", runner.maxConcurrent, " txs/client: ", runner.totalTxsPerClient)
 	streamOn(ctx, runner.watchClientTxSubmissions(ctx, t, 2*time.Second))
 
-	t.Log(nowTS(), "tx submission completed... continuing watching\n")
+	t.Log("\n", nowTS(), "tx submission completed... continuing watching\n")
 	for i := 0; i < 180; i++ {
 		select {
 		case <-ctx.Done():
