@@ -10,9 +10,13 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"syscall"
+	"time"
+
+	"golang.org/x/sys/unix"
 
 	tmsync "github.com/tendermint/tendermint/libs/sync"
-	types "github.com/tendermint/tendermint/rpc/jsonrpc/types"
+	"github.com/tendermint/tendermint/rpc/jsonrpc/types"
 )
 
 const (
@@ -384,12 +388,57 @@ func makeHTTPDialer(remoteAddr string) (func(string, string) (net.Conn, error), 
 	return dialFn, nil
 }
 
+func makeHTTPDialerContext(remoteAddr string) (func(context.Context, string, string) (net.Conn, error), error) {
+	u, err := newParsedURL(remoteAddr)
+	if err != nil {
+		return nil, err
+	}
+
+	protocol := u.Scheme
+
+	// accept http(s) as an alias for tcp
+	switch protocol {
+	case protoHTTP, protoHTTPS:
+		protocol = protoTCP
+	}
+
+	setSockOpts := func(fd int, opts ...int) error {
+		for _, opt := range opts {
+			err := unix.SetsockoptInt(fd, unix.SOL_SOCKET, opt, 1)
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	d := net.Dialer{
+		Timeout:   30 * time.Second,
+		KeepAlive: 30 * time.Second,
+		Control: func(network, address string, c syscall.RawConn) error {
+			var opErr error
+			err := c.Control(func(fd uintptr) {
+				opErr = setSockOpts(int(fd), unix.SO_REUSEPORT, unix.SO_REUSEADDR)
+			})
+			if err != nil {
+				return err
+			}
+			return opErr
+		},
+	}
+	dialFn := func(ctx context.Context, proto, addr string) (net.Conn, error) {
+		return d.DialContext(ctx, protocol, u.GetDialAddress())
+	}
+
+	return dialFn, nil
+}
+
 // DefaultHTTPClient is used to create an http client with some default parameters.
 // We overwrite the http.Client.Dial so we can do http over tcp or unix.
 // remoteAddr should be fully featured (eg. with tcp:// or unix://).
 // An error will be returned in case of invalid remoteAddr.
 func DefaultHTTPClient(remoteAddr string) (*http.Client, error) {
-	dialFn, err := makeHTTPDialer(remoteAddr)
+	dialFn, err := makeHTTPDialerContext(remoteAddr)
 	if err != nil {
 		return nil, err
 	}
@@ -398,7 +447,7 @@ func DefaultHTTPClient(remoteAddr string) (*http.Client, error) {
 		Transport: &http.Transport{
 			// Set to true to prevent GZIP-bomb DoS attacks
 			DisableCompression: true,
-			Dial:               dialFn,
+			DialContext:        dialFn,
 		},
 	}
 

@@ -140,6 +140,10 @@ func (mem *PoolCList) Flush(ctx context.Context) error {
 	return nil
 }
 
+func (mem *PoolCList) HydrateBlockData(ctx context.Context, bl *types.Block) (types.Data, error) {
+	return bl.Data, nil
+}
+
 func (mem *PoolCList) GlobalCheck(tx types.Tx, res *abci.ResponseCheckTx) (OpResult, error) {
 	if mem.recheckCursor == nil {
 		return OpResult{}, nil
@@ -188,10 +192,6 @@ func (mem *PoolCList) GlobalCheck(tx types.Tx, res *abci.ResponseCheckTx) (OpRes
 	mem.metrics.Size.Set(float64(mem.size()))
 
 	return opRes, nil
-}
-
-func (mem *PoolCList) HydratedBlockData(ctx context.Context, block *types.Block) (types.Data, error) {
-	return block.Data, nil
 }
 
 func (mem *PoolCList) Meta() PoolMeta {
@@ -273,9 +273,9 @@ func (mem *PoolCList) CheckTxPrep(ctx context.Context, tx types.Tx) error {
 	return nil
 }
 
-func (mem *PoolCList) Reap(ctx context.Context, opt ReapOption) (types.Data, error) {
+func (mem *PoolCList) Reap(ctx context.Context, opt ReapOption) (ReapResults, error) {
 	if opt.NumTxs > -1 && (opt.GasLimit > -1 || opt.BlockSizeLimit > -1) {
-		return types.Data{}, fmt.Errorf("reaping by num txs and one of gas limit or block size limit is not supported")
+		return ReapResults{}, fmt.Errorf("reaping by num txs and one of gas limit or block size limit is not supported")
 	}
 
 	var txs types.Txs
@@ -288,7 +288,7 @@ func (mem *PoolCList) Reap(ctx context.Context, opt ReapOption) (types.Data, err
 		txs = mem.reapMaxBytesMaxGas(opt.BlockSizeLimit, opt.GasLimit)
 	}
 
-	return types.Data{Txs: txs}, nil
+	return ReapResults{Txs: txs}, nil
 }
 
 func (mem *PoolCList) Recheck(ctx context.Context, appConn proxy.AppConnMempool) (OpResult, error) {

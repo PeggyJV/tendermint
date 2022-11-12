@@ -2,6 +2,7 @@ package consensus
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io/ioutil"
@@ -1273,12 +1274,12 @@ func (cs *State) createProposalBlock() (block *types.Block, blockParts *types.Pa
 	}
 	proposerAddr := cs.privValidatorPubKey.Address()
 
-	block, blockParts, err := cs.blockExec.CreateProposalBlock(cs.Height, cs.state, commit, proposerAddr)
+	block, err := cs.blockExec.CreateProposalBlock(context.TODO(), cs.Height, cs.state, commit, proposerAddr)
 	if err != nil {
 		cs.Logger.Error("failed to create proposal block", "err", err)
 		return nil, nil
 	}
-	return block, blockParts
+	return block, block.MakeDefaultPartSet()
 }
 
 // Enter: any +2/3 prevotes at next round.

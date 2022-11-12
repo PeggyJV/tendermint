@@ -25,9 +25,11 @@ type BlockStore interface {
 	LoadBlock(height int64) *types.Block
 
 	SaveBlock(block *types.Block, blockParts *types.PartSet, seenCommit *types.Commit)
+	SaveBlockV2(block *types.Block, consensusPartSet, fullPartSet *types.PartSet, seenCommit *types.Commit)
 
 	PruneBlocks(height int64) (uint64, error)
 
+	LoadBlockConsensusPartSetPart(height int64, index int) *types.Part
 	LoadBlockByHash(hash []byte) *types.Block
 	LoadBlockPart(height int64, index int) *types.Part
 

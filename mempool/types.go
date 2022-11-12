@@ -33,11 +33,7 @@ type Pool interface {
 	// GlobalCheck will make use of the global callback within the abciclient.Client type.
 	GlobalCheck(tx types.Tx, res *abci.ResponseCheckTx) (OpResult, error)
 
-	// HydratedBlockData provides a hook to hydrate a propossed block. In the case of a
-	// mempool that obfuscates the txs, like narwhal does with its DAG mempool, representing
-	// the txs within consensus as collection certificates, we have to take the
-	// block, grab the certificates and find the corresponding txs from that.
-	HydratedBlockData(ctx context.Context, block *types.Block) (types.Data, error)
+	HydrateBlockData(ctx context.Context, bl *types.Block) (types.Data, error)
 
 	// Meta returns metadata for the pool.
 	Meta() PoolMeta
@@ -50,7 +46,7 @@ type Pool interface {
 
 	// Reap returns Txs from the given pool. It is up to the pool implementation to define
 	// how they handle the possible predicates from option combinations.
-	Reap(ctx context.Context, opts ReapOption) (types.Data, error)
+	Reap(ctx context.Context, opts ReapOption) (ReapResults, error)
 
 	// Recheck should trigger a recheck of the uncommitted txs within the mempool. Note
 	// that not all mempools make use of this. For example, the narwhal mempool does no
@@ -77,6 +73,11 @@ type PoolMeta struct {
 	Size int
 	// TotalBytes is a measure of the store's data size.
 	TotalBytes int64
+}
+
+type ReapResults struct {
+	Collections *types.DAGCollections
+	Txs         types.Txs
 }
 
 // DisableReapOpt sets the reap opt to disabled. This is the default value for all
@@ -150,7 +151,8 @@ func ReapVerify() ReapOptFn {
 
 // RemOption is an option for removing txs from a pool.
 type RemOption struct {
-	TxKeys []types.TxKey
+	TxKeys      []types.TxKey
+	Collections *types.DAGCollections
 }
 
 // RemOptFn is a functional option definition for setting fields on RemOption.
@@ -169,6 +171,12 @@ func CoalesceRemOptFns(opts ...RemOptFn) RemOption {
 func RemByTxKeys(txs ...types.TxKey) RemOptFn {
 	return func(option *RemOption) {
 		option.TxKeys = append(option.TxKeys, txs...)
+	}
+}
+
+func RemCollections(coll types.DAGCollections) RemOptFn {
+	return func(option *RemOption) {
+		option.Collections = &coll
 	}
 }
 

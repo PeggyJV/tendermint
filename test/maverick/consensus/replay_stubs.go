@@ -24,25 +24,17 @@ func (e emptyMempool) AfterBlockFinality(ctx context.Context, block *types.Block
 	return nil
 }
 
-func (e emptyMempool) NewHydratedBlock(ctx context.Context, block *types.Block) (*types.Block, error) {
-	bl := types.Block{
-		Header:   block.Header,
-		Data:     block.Data,
-		Evidence: block.Evidence,
-	}
-	if block.LastCommit != nil {
-		lc := *block.LastCommit
-		bl.LastCommit = &lc
-	}
-	return &bl, nil
+func (e emptyMempool) HydrateBlockData(ctx context.Context, bl *types.Block) (types.Data, error) {
+	return bl.Data, nil
 }
+
 
 func (e emptyMempool) PrepBlockFinality(_ context.Context) (func(), error) {
 	return func() {}, nil
 }
 
-func (e emptyMempool) Reap(ctx context.Context, opts ...mempl.ReapOptFn) (types.Data, error) {
-	return types.Data{}, nil
+func (e emptyMempool) Reap(ctx context.Context, opts ...mempl.ReapOptFn) (mempl.ReapResults, error) {
+	return mempl.ReapResults{}, nil
 }
 
 func (e emptyMempool) TxsAvailable() <-chan struct{} {

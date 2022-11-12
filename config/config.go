@@ -66,6 +66,7 @@ type Config struct {
 	RPC             *RPCConfig             `mapstructure:"rpc"`
 	P2P             *P2PConfig             `mapstructure:"p2p"`
 	Mempool         *MempoolConfig         `mapstructure:"mempool"`
+	Narwhal         *NarwhalMempoolConfig  `mapstructure:"narwhal"`
 	StateSync       *StateSyncConfig       `mapstructure:"statesync"`
 	FastSync        *FastSyncConfig        `mapstructure:"fastsync"`
 	Consensus       *ConsensusConfig       `mapstructure:"consensus"`
@@ -676,10 +677,11 @@ func DefaultFuzzConnConfig() *FuzzConnConfig {
 
 // MempoolConfig defines the configuration options for the Tendermint mempool
 type MempoolConfig struct {
-	RootDir   string `mapstructure:"home"`
-	Recheck   bool   `mapstructure:"recheck"`
-	Broadcast bool   `mapstructure:"broadcast"`
-	WalPath   string `mapstructure:"wal_dir"`
+	RootDir     string        `mapstructure:"home"`
+	ReapWaitDur time.Duration `mapstructure:"reap_wait_duration"`
+	Recheck     bool          `mapstructure:"recheck"`
+	Broadcast   bool          `mapstructure:"broadcast"`
+	WalPath     string        `mapstructure:"wal_dir"`
 	// Maximum number of transactions in the mempool
 	Size int `mapstructure:"size"`
 	// Limit the total size of all txs in the mempool.
@@ -749,6 +751,26 @@ func (cfg *MempoolConfig) ValidateBasic() error {
 		return errors.New("max_tx_bytes can't be negative")
 	}
 	return nil
+}
+
+//-----------------------------------------------------------------------------
+// NarwhalMempoolConfig
+
+// NarwhalMempoolConfig is the config for the narwhal client
+type NarwhalMempoolConfig struct {
+	PrimaryAddr             string                `mapstructure:"primary_addr"`
+	PrimaryEncodedPublicKey string                `mapstructure:"primary_base64_public_key"`
+	Workers                 []NarwhalWorkerConfig `mapstructure:"workers"`
+}
+
+func (n *NarwhalMempoolConfig) StopIdx() int {
+	return len(n.Workers) - 1
+}
+
+// NarwhalWorkerConfig is the config for a single worker node.
+type NarwhalWorkerConfig struct {
+	Name string `mapstructure:"name"`
+	Addr string `mapstructure:"worker_addr"`
 }
 
 //-----------------------------------------------------------------------------
@@ -915,6 +937,8 @@ type ConsensusConfig struct {
 	PeerQueryMaj23SleepDuration time.Duration `mapstructure:"peer_query_maj23_sleep_duration"`
 
 	DoubleSignCheckHeight int64 `mapstructure:"double_sign_check_height"`
+
+	ConsensusStrategy string `mapstructure:"consensus_strategy"`
 }
 
 // DefaultConsensusConfig returns a default configuration for the consensus service

@@ -74,6 +74,7 @@ type RoundState struct {
 	CommitTime         time.Time           `json:"commit_time"`
 	Validators         *types.ValidatorSet `json:"validators"`
 	Proposal           *types.Proposal     `json:"proposal"`
+	ConsensusPartSet   *types.PartSet      `json:"consensus_part_set"`
 	ProposalBlock      *types.Block        `json:"proposal_block"`
 	ProposalBlockParts *types.PartSet      `json:"proposal_block_parts"`
 	LockedRound        int32               `json:"locked_round"`

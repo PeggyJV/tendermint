@@ -366,7 +366,7 @@ func TestSimulateValidatorsChange(t *testing.T) {
 	err = assertMempool(css[0].txNotifier).
 		CheckTx(ctx, newValidatorTx1, nil, mempl.TxInfo{})
 	assert.Nil(t, err)
-	propBlock, _ := css[0].createProposalBlock() // changeProposer(t, cs1, vs2)
+	propBlock := css[0].createProposalBlock().Block // changeProposer(t, cs1, vs2)
 	propBlockParts := propBlock.MakePartSet(partSize)
 	blockID := types.BlockID{Hash: propBlock.Hash(), PartSetHeader: propBlockParts.Header()}
 
@@ -397,7 +397,7 @@ func TestSimulateValidatorsChange(t *testing.T) {
 	err = assertMempool(css[0].txNotifier).
 		CheckTx(ctx, updateValidatorTx1, nil, mempl.TxInfo{})
 	assert.Nil(t, err)
-	propBlock, _ = css[0].createProposalBlock() // changeProposer(t, cs1, vs2)
+	propBlock = css[0].createProposalBlock().Block // changeProposer(t, cs1, vs2)
 	propBlockParts = propBlock.MakePartSet(partSize)
 	blockID = types.BlockID{Hash: propBlock.Hash(), PartSetHeader: propBlockParts.Header()}
 
@@ -436,7 +436,7 @@ func TestSimulateValidatorsChange(t *testing.T) {
 	err = assertMempool(css[0].txNotifier).
 		CheckTx(ctx, newValidatorTx3, nil, mempl.TxInfo{})
 	assert.Nil(t, err)
-	propBlock, _ = css[0].createProposalBlock() // changeProposer(t, cs1, vs2)
+	propBlock = css[0].createProposalBlock().Block // changeProposer(t, cs1, vs2)
 	propBlockParts = propBlock.MakePartSet(partSize)
 	blockID = types.BlockID{Hash: propBlock.Hash(), PartSetHeader: propBlockParts.Header()}
 	newVss := make([]*validatorStub, nVals+1)
@@ -513,7 +513,7 @@ func TestSimulateValidatorsChange(t *testing.T) {
 	err = assertMempool(css[0].txNotifier).
 		CheckTx(ctx, removeValidatorTx3, nil, mempl.TxInfo{})
 	assert.Nil(t, err)
-	propBlock, _ = css[0].createProposalBlock() // changeProposer(t, cs1, vs2)
+	propBlock = css[0].createProposalBlock().Block // changeProposer(t, cs1, vs2)
 	propBlockParts = propBlock.MakePartSet(partSize)
 	blockID = types.BlockID{Hash: propBlock.Hash(), PartSetHeader: propBlockParts.Header()}
 	newVss = make([]*validatorStub, nVals+3)
@@ -1198,8 +1198,15 @@ func (bs *mockBlockStore) LoadBlockMeta(height int64) *types.BlockMeta {
 	}
 }
 func (bs *mockBlockStore) LoadBlockPart(height int64, index int) *types.Part { return nil }
+func (bs *mockBlockStore) LoadBlockConsensusPartSetPart(height int64, index int) *types.Part {
+	panic("not implemented yet")
+}
+
 func (bs *mockBlockStore) SaveBlock(block *types.Block, blockParts *types.PartSet, seenCommit *types.Commit) {
 }
+func (bs *mockBlockStore) SaveBlockV2(block *types.Block, consensusPartSet, fullPartSet *types.PartSet, seenCommit *types.Commit) {
+}
+
 func (bs *mockBlockStore) LoadBlockCommit(height int64) *types.Commit {
 	return bs.commits[height-1]
 }

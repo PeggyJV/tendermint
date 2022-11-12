@@ -23,25 +23,33 @@ var (
 // a so-called Proof-of-Lock (POL) round, as noted in the POLRound.
 // If POLRound >= 0, then BlockID corresponds to the block that is locked in POLRound.
 type Proposal struct {
-	Type      tmproto.SignedMsgType
-	Height    int64     `json:"height"`
-	Round     int32     `json:"round"`     // there can not be greater than 2_147_483_647 rounds
-	POLRound  int32     `json:"pol_round"` // -1 if null.
-	BlockID   BlockID   `json:"block_id"`
-	Timestamp time.Time `json:"timestamp"`
-	Signature []byte    `json:"signature"`
+	Type                   tmproto.SignedMsgType
+	Height                 int64         `json:"height"`
+	Round                  int32         `json:"round"`     // there can not be greater than 2_147_483_647 rounds
+	POLRound               int32         `json:"pol_round"` // -1 if null.
+	BlockID                BlockID       `json:"block_id"`
+	ConsensusPartSetHeader PartSetHeader `json:"consensus_part_set_header"`
+	Timestamp              time.Time     `json:"timestamp"`
+	Signature              []byte        `json:"signature"`
 }
 
 // NewProposal returns a new Proposal.
 // If there is no POLRound, polRound should be -1.
 func NewProposal(height int64, round int32, polRound int32, blockID BlockID) *Proposal {
+	return NewProposalV2(height, round, polRound, blockID, PartSetHeader{})
+}
+
+// NewProposalV2 returns a new Proposal.
+// If there is no POLRound, polRound should be -1.
+func NewProposalV2(height int64, round int32, polRound int32, blockID BlockID, csPSHeader PartSetHeader) *Proposal {
 	return &Proposal{
-		Type:      tmproto.ProposalType,
-		Height:    height,
-		Round:     round,
-		BlockID:   blockID,
-		POLRound:  polRound,
-		Timestamp: tmtime.Now(),
+		Type:                   tmproto.ProposalType,
+		Height:                 height,
+		Round:                  round,
+		BlockID:                blockID,
+		ConsensusPartSetHeader: csPSHeader,
+		POLRound:               polRound,
+		Timestamp:              tmtime.Now(),
 	}
 }
 
@@ -131,6 +139,7 @@ func (p *Proposal) ToProto() *tmproto.Proposal {
 	pb.PolRound = p.POLRound
 	pb.Timestamp = p.Timestamp
 	pb.Signature = p.Signature
+	pb.PartSetHeader = p.ConsensusPartSetHeader.ToProto()
 
 	return pb
 }
@@ -156,6 +165,12 @@ func ProposalFromProto(pp *tmproto.Proposal) (*Proposal, error) {
 	p.POLRound = pp.PolRound
 	p.Timestamp = pp.Timestamp
 	p.Signature = pp.Signature
+
+	ph, err := PartSetHeaderFromProto(&pp.PartSetHeader)
+	if err != nil {
+		return nil, err
+	}
+	p.ConsensusPartSetHeader = *ph
 
 	return p, p.ValidateBasic()
 }

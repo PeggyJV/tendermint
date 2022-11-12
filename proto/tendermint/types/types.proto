@@ -79,6 +79,9 @@ message Header {
   // consensus info
   bytes evidence_hash    = 13;  // evidence included in the block
   bytes proposer_address = 14;  // original proposer of the block
+
+  bytes root_collection = 15;
+  repeated bytes extra_collections = 16;
 }
 
 // Data contains the set of transactions included in the block
@@ -87,9 +90,6 @@ message Data {
   // NOTE: not all txs here are valid.  We're just agreeing on the order first.
   // This means that block.AppHash does not include these txs.
   repeated bytes txs = 1;
-
-  bytes root_collection = 2;
-  repeated bytes extra_collections = 3;
 }
 
 // Vote represents a prevote, precommit, or commit vote from validators for
@@ -133,6 +133,7 @@ message Proposal {
   google.protobuf.Timestamp timestamp = 6
       [(gogoproto.nullable) = false, (gogoproto.stdtime) = true];
   bytes signature = 7;
+  PartSetHeader part_set_header = 8 [(gogoproto.nullable) = false];
 }
 
 message SignedHeader {
@@ -150,6 +151,7 @@ message BlockMeta {
   int64   block_size = 2;
   Header  header     = 3 [(gogoproto.nullable) = false];
   int64   num_txs    = 4;
+  PartSetHeader consensus_part_set_header = 5 [(gogoproto.nullable) = false];
 }
 
 // TxProof represents a Merkle proof of the presence of a transaction in the Merkle tree.

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	_ "net/http/pprof" // nolint: gosec // securely exposed on separate, optional port
 	"strings"
 	"time"
 
@@ -29,6 +30,7 @@ import (
 	"github.com/tendermint/tendermint/libs/service"
 	"github.com/tendermint/tendermint/light"
 	mempl "github.com/tendermint/tendermint/mempool"
+	"github.com/tendermint/tendermint/mempool/narwhal"
 	"github.com/tendermint/tendermint/p2p"
 	"github.com/tendermint/tendermint/p2p/pex"
 	"github.com/tendermint/tendermint/privval"
@@ -49,8 +51,6 @@ import (
 	"github.com/tendermint/tendermint/types"
 	tmtime "github.com/tendermint/tendermint/types/time"
 	"github.com/tendermint/tendermint/version"
-
-	_ "net/http/pprof" // nolint: gosec // securely exposed on separate, optional port
 
 	_ "github.com/lib/pq" // provide the psql db driver
 )
@@ -186,6 +186,11 @@ func StateProvider(stateProvider statesync.StateProvider) Option {
 
 //------------------------------------------------------------------------------
 
+type wal interface {
+	InitWAL() error
+	CloseWAL()
+}
+
 // Node is the highest level interface to a full Tendermint node.
 // It includes all configuration information and running services.
 type Node struct {
@@ -211,7 +216,7 @@ type Node struct {
 	bcReactor         p2p.Reactor       // for fast-syncing
 	mempoolReactor    *mempl.Reactor    // for gossipping transactions
 	mempoolABCI       *mempl.ABCI
-	mempoolPool       *mempl.PoolCList
+	mempoolWAL        wal
 	stateSync         bool                    // whether the node should state sync on startup
 	stateSyncReactor  *statesync.Reactor      // for hosting and restoring state sync snapshots
 	stateSyncProvider statesync.StateProvider // provides state data for bootstrapping a node
@@ -362,32 +367,99 @@ func onlyValidatorIsUs(state sm.State, pubKey crypto.PubKey) bool {
 	return bytes.Equal(pubKey.Address(), addr)
 }
 
-func createMempoolAndMempoolReactor(config *cfg.Config, proxyApp proxy.AppConns,
-	state sm.State, memplMetrics *mempl.Metrics, logger log.Logger) (*mempl.ABCI, *mempl.Reactor, *mempl.PoolCList) {
-
+func createMempoolAndMempoolReactor(
+	ctx context.Context,
+	config *cfg.Config,
+	proxyApp proxy.AppConns,
+	state sm.State,
+	memplMetrics *mempl.Metrics,
+	logger log.Logger,
+	namespace, chainID string,
+) (*mempl.ABCI, *mempl.Reactor, wal, error) {
 	mempoolLogger := logger.With("module", "mempool")
-	pool := mempl.NewPoolCList(
+
+	labelsNVals := []string{"chain_id", chainID}
+	poolMiddlewares := []mempl.PoolMiddleware{
+		mempl.ObservePool(mempoolLogger, namespace, labelsNVals...),
+	}
+
+	var (
+		mpABCI  *mempl.ABCI
+		reactor *mempl.Reactor
+		walImpl wal
+	)
+	switch {
+	case config.Narwhal != nil:
+		mempoolLogger.Info("setting up narwhal mempool")
+		var err error
+		// note that the narwhal mempool does not make use of a WAL or a reactor
+		mpABCI, err = newNarwhalMempoolABCI(ctx, mempoolLogger, proxyApp.Mempool(), config, namespace, labelsNVals, poolMiddlewares...)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+	default:
+		mpABCI, reactor, walImpl = newClistMempoolABCI(logger, state, proxyApp.Mempool(), config, memplMetrics, poolMiddlewares...)
+	}
+
+	if config.Consensus.WaitForTxs() {
+		mpABCI.EnableTxsAvailable()
+	}
+	return mpABCI, reactor, walImpl, nil
+}
+
+func newNarwhalMempoolABCI(ctx context.Context, logger log.Logger, appConn proxy.AppConnMempool, config *cfg.Config, namespace string, labelsAndVals []string, poolMiddleware ...mempl.PoolMiddleware) (*mempl.ABCI, error) {
+	nLogger := logger.With("component", "narwhal_pool")
+	narwhalPool, err := narwhal.New(ctx, config.Narwhal, narwhal.WithLogger(nLogger), narwhal.WithMetricsDetails(namespace, labelsAndVals...))
+	if err != nil {
+		return nil, err
+	}
+
+	var pool mempl.Pool = narwhalPool
+	for _, middleware := range poolMiddleware {
+		pool = middleware(pool)
+	}
+
+	return mempl.NewABCI(
+		logger.With("component", "abci"),
+		config.Mempool,
+		appConn,
+		pool,
+	), nil
+}
+
+func newClistMempoolABCI(
+	logger log.Logger,
+	state sm.State,
+	appConn proxy.AppConnMempool,
+	config *cfg.Config,
+	memplMetrics *mempl.Metrics,
+	poolMiddleware ...mempl.PoolMiddleware,
+) (*mempl.ABCI, *mempl.Reactor, wal) {
+	clistPool := mempl.NewPoolCList(
 		config.Mempool,
 		state.LastBlockHeight,
 		mempl.WithMetrics(memplMetrics),
 		mempl.WithPreCheck(sm.TxPreCheck(state)),
 		mempl.WithPostCheck(sm.TxPostCheck(state)),
 	)
-	pool.SetLogger(mempoolLogger.With("component", "pool_clist"))
+	clistLogger := logger.With("component", "pool_clist")
+	clistPool.SetLogger(clistLogger)
+
+	var pool mempl.Pool = clistPool
+	for _, middleware := range poolMiddleware {
+		pool = middleware(pool)
+	}
 
 	mpABCI := mempl.NewABCI(
-		mempoolLogger.With("component", "abci"),
+		logger.With("component", "abci"),
 		config.Mempool,
-		proxyApp.Mempool(),
+		appConn,
 		pool,
 	)
-	mempoolReactor := mempl.NewReactor(config.Mempool, mpABCI, pool)
-	mempoolReactor.SetLogger(mempoolLogger.With("component", "reactor"))
+	reactor := mempl.NewReactor(config.Mempool, mpABCI, clistPool)
+	reactor.SetLogger(logger.With("component", "reactor"))
 
-	if config.Consensus.WaitForTxs() {
-		mpABCI.EnableTxsAvailable()
-	}
-	return mpABCI, mempoolReactor, pool
+	return mpABCI, reactor, clistPool
 }
 
 func createEvidenceReactor(config *cfg.Config, dbProvider DBProvider,
@@ -412,11 +484,13 @@ func createBlockchainReactor(config *cfg.Config,
 	blockExec *sm.BlockExecutor,
 	blockStore *store.BlockStore,
 	fastSync bool,
-	logger log.Logger) (bcReactor p2p.Reactor, err error) {
+	logger log.Logger,
+	strategy cs.Strategy,
+) (bcReactor p2p.Reactor, err error) {
 
 	switch config.FastSync.Version {
 	case "v0":
-		bcReactor = bcv0.NewBlockchainReactor(state.Copy(), blockExec, blockStore, fastSync)
+		bcReactor = bcv0.NewBlockchainReactor(state.Copy(), blockExec, blockStore, strategy, fastSync)
 	case "v1":
 		bcReactor = bcv1.NewBlockchainReactor(state.Copy(), blockExec, blockStore, fastSync)
 	case "v2":
@@ -441,6 +515,11 @@ func createConsensusReactor(config *cfg.Config,
 	eventBus *types.EventBus,
 	consensusLogger log.Logger) (*cs.Reactor, *cs.State) {
 
+	stateOpts := []cs.StateOption{cs.StateMetrics(csMetrics)}
+	if config.Consensus.ConsensusStrategy == "meta_only" {
+		stateOpts = append(stateOpts, cs.StateStrategyMetaOnly())
+	}
+
 	consensusState := cs.NewState(
 		config.Consensus,
 		state.Copy(),
@@ -448,7 +527,7 @@ func createConsensusReactor(config *cfg.Config,
 		blockStore,
 		txNotifier,
 		evidencePool,
-		cs.StateMetrics(csMetrics),
+		stateOpts...,
 	)
 	consensusState.SetLogger(consensusLogger)
 	if privValidator != nil {
@@ -551,7 +630,9 @@ func createSwitch(config *cfg.Config,
 		p2p.SwitchPeerFilters(peerFilters...),
 	)
 	sw.SetLogger(p2pLogger)
-	sw.AddReactor("MEMPOOL", mempoolReactor)
+	if mempoolReactor != nil {
+		sw.AddReactor("MEMPOOL", mempoolReactor)
+	}
 	sw.AddReactor("BLOCKCHAIN", bcReactor)
 	sw.AddReactor("CONSENSUS", consensusReactor)
 	sw.AddReactor("EVIDENCE", evidenceReactor)
@@ -678,7 +759,7 @@ func NewNode(config *cfg.Config,
 	metricsProvider MetricsProvider,
 	logger log.Logger,
 	options ...Option) (*Node, error) {
-
+	ctx := context.Background() // TODO(berg): wire this up
 	blockStore, stateDB, err := initDBs(config, dbProvider)
 	if err != nil {
 		return nil, err
@@ -760,7 +841,19 @@ func NewNode(config *cfg.Config,
 	csMetrics, p2pMetrics, memplMetrics, smMetrics := metricsProvider(genDoc.ChainID)
 
 	// Make MempoolReactor
-	mpABCI, mempoolReactor, clistPool := createMempoolAndMempoolReactor(config, proxyApp, state, memplMetrics, logger)
+	mpABCI, mempoolReactor, clistPool, err := createMempoolAndMempoolReactor(
+		ctx,
+		config,
+		proxyApp,
+		state,
+		memplMetrics,
+		logger,
+		config.Instrumentation.Namespace,
+		genDoc.ChainID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create mempool: %w", err)
+	}
 
 	// Make Evidence Reactor
 	evidenceReactor, evidencePool, err := createEvidenceReactor(config, dbProvider, stateDB, blockStore, logger)
@@ -778,8 +871,21 @@ func NewNode(config *cfg.Config,
 		sm.BlockExecutorWithMetrics(smMetrics),
 	)
 
+	consensusReactor, consensusState := createConsensusReactor(
+		config, state, blockExec, blockStore, mpABCI, evidencePool,
+		privValidator, csMetrics, stateSync || fastSync, eventBus, consensusLogger,
+	)
+
 	// Make BlockchainReactor. Don't start fast sync if we're doing a state sync first.
-	bcReactor, err := createBlockchainReactor(config, state, blockExec, blockStore, fastSync && !stateSync, logger)
+	bcReactor, err := createBlockchainReactor(
+		config,
+		state,
+		blockExec,
+		blockStore,
+		fastSync && !stateSync,
+		logger,
+		consensusState.Strategy(),
+	)
 	if err != nil {
 		return nil, fmt.Errorf("could not create blockchain reactor: %w", err)
 	}
@@ -791,10 +897,6 @@ func NewNode(config *cfg.Config,
 	} else if fastSync {
 		csMetrics.FastSyncing.Set(1)
 	}
-	consensusReactor, consensusState := createConsensusReactor(
-		config, state, blockExec, blockStore, mpABCI, evidencePool,
-		privValidator, csMetrics, stateSync || fastSync, eventBus, consensusLogger,
-	)
 
 	// Set up state sync reactor, and schedule a sync if requested.
 	// FIXME The way we do phased startups (e.g. replay -> fast sync -> consensus) is very messy,
@@ -878,7 +980,7 @@ func NewNode(config *cfg.Config,
 		bcReactor:        bcReactor,
 		mempoolReactor:   mempoolReactor,
 		mempoolABCI:      mpABCI,
-		mempoolPool:      clistPool,
+		mempoolWAL:       clistPool,
 		consensusState:   consensusState,
 		consensusReactor: consensusReactor,
 		stateSyncReactor: stateSyncReactor,
@@ -939,8 +1041,8 @@ func (n *Node) OnStart() error {
 
 	n.isListening = true
 
-	if n.config.Mempool.WalEnabled() && n.mempoolPool != nil {
-		err = n.mempoolPool.InitWAL()
+	if n.config.Mempool.WalEnabled() && n.mempoolWAL != nil {
+		err = n.mempoolWAL.InitWAL()
 		if err != nil {
 			return fmt.Errorf("init mempool WAL: %w", err)
 		}
@@ -994,8 +1096,8 @@ func (n *Node) OnStop() {
 	}
 
 	// stop mempool WAL
-	if n.config.Mempool.WalEnabled() && n.mempoolPool != nil {
-		n.mempoolPool.CloseWAL()
+	if n.config.Mempool.WalEnabled() && n.mempoolWAL != nil {
+		n.mempoolWAL.CloseWAL()
 	}
 
 	if err := n.transport.Close(); err != nil {

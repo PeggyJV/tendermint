@@ -4,7 +4,7 @@ import (
 	"github.com/go-kit/kit/metrics"
 	"github.com/go-kit/kit/metrics/discard"
 
-	prometheus "github.com/go-kit/kit/metrics/prometheus"
+	"github.com/go-kit/kit/metrics/prometheus"
 	stdprometheus "github.com/prometheus/client_golang/prometheus"
 )
 
@@ -45,10 +45,21 @@ type Metrics struct {
 	// Time between this and the last block.
 	BlockIntervalSeconds metrics.Histogram
 
+	// Size of encoded proposal in bytes.
+	ProposalSizeBytes metrics.Gauge
+
 	// Number of transactions.
 	NumTxs metrics.Gauge
 	// Size of the block.
 	BlockSizeBytes metrics.Gauge
+	// Size of the committed partset in bytes
+	BlockPartSetSize metrics.Gauge
+	// Number of parts in the commited block part set.
+	BlockPartSetCount metrics.Gauge
+	// Size of consensus block part, aka the gossiped partset.
+	ConsensusBlockPartSetSize metrics.Gauge
+	// Number of parts in consensus block part set.
+	ConsensusBlockPartSetCount metrics.Gauge
 	// Total number of transactions.
 	TotalTxs metrics.Gauge
 	// The latest block height.
@@ -166,11 +177,41 @@ func PrometheusMetrics(namespace string, labelsAndValues ...string) *Metrics {
 			Name:      "num_txs",
 			Help:      "Number of transactions.",
 		}, labels).With(labelsAndValues...),
+		ProposalSizeBytes: prometheus.NewGaugeFrom(stdprometheus.GaugeOpts{
+			Namespace: namespace,
+			Subsystem: MetricsSubsystem,
+			Name:      "proposal_size_bytes",
+			Help:      "Size of the proposal.",
+		}, labels).With(labelsAndValues...),
 		BlockSizeBytes: prometheus.NewGaugeFrom(stdprometheus.GaugeOpts{
 			Namespace: namespace,
 			Subsystem: MetricsSubsystem,
 			Name:      "block_size_bytes",
 			Help:      "Size of the block.",
+		}, labels).With(labelsAndValues...),
+		BlockPartSetSize: prometheus.NewGaugeFrom(stdprometheus.GaugeOpts{
+			Namespace: namespace,
+			Subsystem: MetricsSubsystem,
+			Name:      "block_partset_size_bytes",
+			Help:      "Size of the committed partset.",
+		}, labels).With(labelsAndValues...),
+		BlockPartSetCount: prometheus.NewGaugeFrom(stdprometheus.GaugeOpts{
+			Namespace: namespace,
+			Subsystem: MetricsSubsystem,
+			Name:      "block_partset_count",
+			Help:      "Number of parts contained in the committed part set.",
+		}, labels).With(labelsAndValues...),
+		ConsensusBlockPartSetSize: prometheus.NewGaugeFrom(stdprometheus.GaugeOpts{
+			Namespace: namespace,
+			Subsystem: MetricsSubsystem,
+			Name:      "consensus_block_partset_size_bytes",
+			Help:      "Size of the consensus/gossiped part set in bytes.",
+		}, labels).With(labelsAndValues...),
+		ConsensusBlockPartSetCount: prometheus.NewGaugeFrom(stdprometheus.GaugeOpts{
+			Namespace: namespace,
+			Subsystem: MetricsSubsystem,
+			Name:      "consensus_block_partset_count",
+			Help:      "Number of parts contained in the consensus/gossiped part set.",
 		}, labels).With(labelsAndValues...),
 		TotalTxs: prometheus.NewGaugeFrom(stdprometheus.GaugeOpts{
 			Namespace: namespace,
@@ -239,14 +280,19 @@ func NopMetrics() *Metrics {
 
 		BlockIntervalSeconds: discard.NewHistogram(),
 
-		NumTxs:                    discard.NewGauge(),
-		BlockSizeBytes:            discard.NewGauge(),
-		TotalTxs:                  discard.NewGauge(),
-		CommittedHeight:           discard.NewGauge(),
-		FastSyncing:               discard.NewGauge(),
-		StateSyncing:              discard.NewGauge(),
-		BlockParts:                discard.NewCounter(),
-		QuorumPrevoteMessageDelay: discard.NewGauge(),
-		FullPrevoteMessageDelay:   discard.NewGauge(),
+		NumTxs:                     discard.NewGauge(),
+		ProposalSizeBytes:          discard.NewGauge(),
+		BlockSizeBytes:             discard.NewGauge(),
+		BlockPartSetSize:           discard.NewGauge(),
+		BlockPartSetCount:          discard.NewGauge(),
+		ConsensusBlockPartSetSize:  discard.NewGauge(),
+		ConsensusBlockPartSetCount: discard.NewGauge(),
+		TotalTxs:                   discard.NewGauge(),
+		CommittedHeight:            discard.NewGauge(),
+		FastSyncing:                discard.NewGauge(),
+		StateSyncing:               discard.NewGauge(),
+		BlockParts:                 discard.NewCounter(),
+		QuorumPrevoteMessageDelay:  discard.NewGauge(),
+		FullPrevoteMessageDelay:    discard.NewGauge(),
 	}
 }

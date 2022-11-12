@@ -23,6 +23,15 @@ docs/.vuepress/dist
 abci-cli
 docs/node_modules/
 index.html.md
+mempool/narwhal/internal/demo
+mempool/narwhal/internal/terraform/narwhal-cosmos-6fb9ac2ac84a.json
+mempool/narwhal/internal/narwhalmint/test_results
+mempool/narwhal/internal/docker_run/compose.logs
+mempool/narwhal/internal/docker_run/build/tendermint
+mempool/narwhal/internal/narwhalmint/docker_run/build/node*/data/*.db
+mempool/narwhal/internal/docker_run/build/node*/data/cs.wal
+mempool/narwhal/internal/docker_run/validators/validator-*/logs
+mempool/narwhal/internal/docker_run/validators/validator-*/db-*
 
 scripts/wal2json/wal2json
 scripts/cutWALUntil/cutWALUntil
@@ -41,10 +50,8 @@ addrbook.json
 */vendor
 .vendor-new/
 */.glide
-.terraform
-terraform.tfstate
-terraform.tfstate.backup
-terraform.tfstate.d
+.terraform*
+terraform.tfstate*
 profile\.out
 test/e2e/build
 test/e2e/networks/*/

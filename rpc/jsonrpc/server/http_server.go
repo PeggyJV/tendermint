@@ -3,6 +3,7 @@ package server
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,12 +12,14 @@ import (
 	"os"
 	"runtime/debug"
 	"strings"
+	"syscall"
 	"time"
 
 	"golang.org/x/net/netutil"
+	"golang.org/x/sys/unix"
 
 	"github.com/tendermint/tendermint/libs/log"
-	types "github.com/tendermint/tendermint/rpc/jsonrpc/types"
+	"github.com/tendermint/tendermint/rpc/jsonrpc/types"
 )
 
 // Config is a RPC server configuration.
@@ -247,7 +250,31 @@ func Listen(addr string, config *Config) (listener net.Listener, err error) {
 		)
 	}
 	proto, addr := parts[0], parts[1]
-	listener, err = net.Listen(proto, addr)
+
+	setSockOpts := func(fd int, opts ...int) error {
+		for _, opt := range opts {
+			err := unix.SetsockoptInt(fd, unix.SOL_SOCKET, opt, 1)
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	lc := &net.ListenConfig{
+		Control: func(network, address string, c syscall.RawConn) error {
+			var opErr error
+			err := c.Control(func(fd uintptr) {
+				opErr = setSockOpts(int(fd), unix.SO_REUSEPORT, unix.SO_REUSEADDR)
+			})
+			if err != nil {
+				return err
+			}
+			return opErr
+		},
+	}
+
+	listener, err = lc.Listen(context.Background(), proto, addr)
 	if err != nil {
 		return nil, fmt.Errorf("failed to listen on %v: %v", addr, err)
 	}
