@@ -51,7 +51,7 @@ func (b *builder) nodeStatsRunE(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	r := newTMClientRunner(cmd.ErrOrStderr(), clients, 0, 0)
+	r := newTMClientRunner(cmd.ErrOrStderr(), clients, b.maxTxs, b.maxConcurrency, b.txSize)
 	ctx := cmd.Context()
 
 	r.updateSyncStats(ctx)

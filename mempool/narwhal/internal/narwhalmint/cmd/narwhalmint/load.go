@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -17,10 +18,10 @@ import (
 	"github.com/prometheus/client_golang/prometheus/push"
 	"github.com/spf13/cobra"
 
+	"github.com/tendermint/tendermint/libs/math"
 	"github.com/tendermint/tendermint/mempool/narwhal/internal/narwhalmint"
 	tmhttp "github.com/tendermint/tendermint/rpc/client/http"
 	coretypes "github.com/tendermint/tendermint/rpc/core/types"
-	"github.com/tendermint/tendermint/types"
 )
 
 func (b *builder) cmdLoad() *cobra.Command {
@@ -37,6 +38,7 @@ echo '["35.223.226.153", ...OTHER_IPS]' |  narwhalmint load
 	}
 	cmd.Flags().IntVar(&b.maxConcurrency, "concurrency", 1, "maximum client concurrency (i.e. max concurrent load on a single node)")
 	cmd.Flags().IntVar(&b.maxTxs, "txs", 1<<10, "maximum number of total txs to be sent; is split evenly between nodes")
+	cmd.Flags().IntVar(&b.txSize, "tx-size", 0, "size of tx")
 	cmd.Flags().StringVar(&b.chainID, "chain-id", "", "chain id of the chain under load")
 	cobra.MarkFlagRequired(cmd.Flags(), "chain-id")
 
@@ -54,7 +56,7 @@ func (b *builder) loadRunE(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	runner := newTMClientRunner(cmd.ErrOrStderr(), clients, b.maxTxs, b.maxConcurrency)
+	runner := newTMClientRunner(cmd.ErrOrStderr(), clients, b.maxTxs, b.maxConcurrency, b.txSize)
 	runner.println(fmt.Sprintf("submitting client Txs: max_txs=%d max_concurrent=%d txs/client: %d", runner.maxTxs, runner.maxConcurrent, runner.totalTxsPerClient))
 
 	pusher, err := b.pushLoadMetrics(len(clients), runner.totalTxsPerClient)
@@ -73,21 +75,28 @@ func (b *builder) loadRunE(cmd *cobra.Command, args []string) error {
 }
 
 func (b *builder) pushLoadMetrics(numClients, maxTxsPerClient int) (*push.Pusher, error) {
-	gauge := prometheus.NewGauge(prometheus.GaugeOpts{
-		Namespace: "observability",
-		Subsystem: "loadtest",
-		Name:      "clients",
-		ConstLabels: prometheus.Labels{
-			"chain_id":               b.chainID,
-			"max_client_concurrency": strconv.Itoa(b.maxConcurrency),
-			"max_client_txs":         strconv.Itoa(maxTxsPerClient),
-			"max_txs":                strconv.Itoa(b.maxTxs),
-		},
-	})
-	gauge.Set(float64(numClients))
+	gaugeFn := func(name string) prometheus.Gauge {
+		return prometheus.NewGauge(prometheus.GaugeOpts{
+			Namespace: "observability",
+			Subsystem: "loadtest",
+			Name:      name,
+			ConstLabels: prometheus.Labels{
+				"chain_id":               b.chainID,
+				"max_client_concurrency": strconv.Itoa(b.maxConcurrency),
+				"max_client_txs":         strconv.Itoa(maxTxsPerClient),
+				"max_txs":                strconv.Itoa(b.maxTxs),
+			},
+		})
+	}
+	clientsGauge := gaugeFn("clients")
+	clientsGauge.Set(float64(numClients))
+
+	txSizeGauge := gaugeFn("tx_size")
+	txSizeGauge.Set(float64(b.txSize))
 
 	pusher := push.New("localhost:9091", "prompush").
-		Collector(gauge)
+		Collector(clientsGauge).
+		Collector(txSizeGauge)
 
 	return pusher, pusher.Push()
 }
@@ -114,9 +123,10 @@ type tmClientRunner struct {
 
 	starter chan chan struct{}
 	took    time.Duration
+	txSize  int
 }
 
-func newTMClientRunner(w io.Writer, clients []*narwhalmint.TMClient, maxTxs, maxConcurrent int) *tmClientRunner {
+func newTMClientRunner(w io.Writer, clients []*narwhalmint.TMClient, maxTxs, maxConcurrent, txSize int) *tmClientRunner {
 	progress := uiprogress.New()
 	progress.RefreshInterval = 100 * time.Millisecond
 	progress.Out = w
@@ -138,6 +148,7 @@ func newTMClientRunner(w io.Writer, clients []*narwhalmint.TMClient, maxTxs, max
 		mStats:            mStats,
 		mSyncStats:        make(map[string]tmNodeStatus),
 		starter:           make(chan chan struct{}),
+		txSize:            txSize,
 	}
 }
 
@@ -307,16 +318,45 @@ func (r *tmClientRunner) submitTMTxs(ctx context.Context, cl *narwhalmint.TMClie
 			defer wg.Done()
 			defer func() { <-sem }()
 			bar.Incr()
-			tx := types.Tx(fmt.Sprintf("%s:tx-%d-%d", cl.NodeName, i, time.Now().Unix()))
 
-			_, err := cl.BroadcastTxAsync(ctx, tx)
-			var errMsg string
-			if err != nil {
+			txNum, epoch := strconv.Itoa(i), strconv.FormatInt(time.Now().Unix(), 10)
+			padding := math.Max(r.txSize-len(cl.NodeName)-len(txNum)-len(epoch), 1)
+
+			tx := struct {
+				NodeName string `json:"node_name"`
+				TxNum    string `json:"tx_num"`
+				Epoch    string `json:"epoch"`
+				Padding  []byte `json:"padding"`
+			}{
+				NodeName: cl.NodeName,
+				TxNum:    txNum,
+				Epoch:    epoch,
+				Padding:  make([]byte, padding),
+			}
+
+			var (
+				errMsg  string
+				txBytes []byte
+			)
+
+			if _, err := rand.Read(tx.Padding); err != nil {
 				errMsg = err.Error()
-				if strings.Contains(errMsg, "connection reset by peer") {
-					parts := strings.Split(errMsg, ": ")
-					parts = append(parts[:2], parts[3:]...)
-					errMsg = strings.Join(parts, ": ")
+			} else {
+				txBytes, err = json.Marshal(tx)
+				if err != nil {
+					errMsg = err.Error()
+				}
+			}
+
+			if len(txBytes) > 0 && errMsg == "" {
+				_, err := cl.BroadcastTxAsync(ctx, txBytes)
+				if err != nil {
+					errMsg = err.Error()
+					if strings.Contains(errMsg, "connection reset by peer") {
+						parts := strings.Split(errMsg, ": ")
+						parts = append(parts[:2], parts[3:]...)
+						errMsg = strings.Join(parts, ": ")
+					}
 				}
 			}
 

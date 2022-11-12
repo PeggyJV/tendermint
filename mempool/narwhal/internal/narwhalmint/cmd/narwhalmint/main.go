@@ -51,6 +51,7 @@ type builder struct {
 	reapDur                   time.Duration
 	rpcPort                   string
 	tmMetricsPort             int
+	txSize                    int
 	workers                   int
 }
 

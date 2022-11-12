@@ -124,6 +124,7 @@ demo_confirmed: demo
 
 run_testnet_config:
 	@export tmp=$$(cat $(TESTNET_RUN_FILE)) ; \
+	test -f $(TESTNET_RUN_FILE) && \
 	echo "\\ntestnet config to be executed: $$(echo $$tmp | jq -c)\\n" && \
 	MAKE demo_confirmed \
 		LOAD_ARGS="$$(echo $$tmp | jq -r '.load_args')" \
