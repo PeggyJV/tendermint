@@ -226,7 +226,7 @@ func (conR *Reactor) Receive(chID byte, src p2p.Peer, msgBytes []byte) {
 		return
 	}
 
-	msg, err := decodeMsg(msgBytes)
+	msg, err := decodeMsg(msgBytes, conR.Metrics)
 	if err != nil {
 		conR.Logger.Error("Error decoding message", "src", src, "chId", chID, "err", err)
 		conR.Switch.StopPeerForError(src, err)
@@ -1442,12 +1442,15 @@ func init() {
 	tmjson.RegisterType(&VoteSetBitsMessage{}, "tendermint/VoteSetBits")
 }
 
-func decodeMsg(bz []byte) (msg Message, err error) {
+func decodeMsg(bz []byte, metrics *Metrics) (msg Message, err error) {
 	pb := &tmcons.Message{}
 	if err = proto.Unmarshal(bz, pb); err != nil {
 		return msg, err
 	}
-
+	switch pb.Sum.(type) {
+	case *tmcons.Message_Proposal:
+		metrics.ProposalSizeBytes.Set(float64(len(bz)))
+	}
 	return MsgFromProto(pb)
 }
 

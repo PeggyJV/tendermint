@@ -1243,6 +1243,9 @@ func (cs *State) createProposalBlock() ProposedBlockData {
 			"round", cs.Round,
 			"step", cs.Step,
 		)
+	} else {
+		cs.metrics.ConsensusBlockPartSetSize.Set(float64(res.ConsensusPartSet.ByteSize()))
+		cs.metrics.ConsensusBlockPartSetCount.Set(float64(res.ConsensusPartSet.Total()))
 	}
 	return res
 }
@@ -1707,7 +1710,7 @@ func (cs *State) finalizeCommit(height int64) {
 	}
 
 	// must be called before we update state
-	cs.recordMetrics(height, block)
+	cs.recordMetrics(height, block, blockParts)
 
 	// NewHeightStep!
 	cs.updateToState(stateCopy)
@@ -1745,7 +1748,7 @@ func (cs *State) pruneBlocks(retainHeight int64) (uint64, error) {
 	return pruned, nil
 }
 
-func (cs *State) recordMetrics(height int64, block *types.Block) {
+func (cs *State) recordMetrics(height int64, block *types.Block, partset *types.PartSet) {
 	cs.metrics.Validators.Set(float64(cs.Validators.Size()))
 	cs.metrics.ValidatorsPower.Set(float64(cs.Validators.TotalVotingPower()))
 
@@ -1830,6 +1833,8 @@ func (cs *State) recordMetrics(height int64, block *types.Block) {
 	cs.metrics.NumTxs.Set(float64(len(block.Data.Txs)))
 	cs.metrics.TotalTxs.Add(float64(len(block.Data.Txs)))
 	cs.metrics.BlockSizeBytes.Set(float64(block.Size()))
+	cs.metrics.BlockPartSetSize.Set(float64(partset.ByteSize()))
+	cs.metrics.BlockPartSetCount.Set(float64(partset.Total()))
 	cs.metrics.CommittedHeight.Set(float64(block.Height))
 }
 
